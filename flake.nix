@@ -4,53 +4,53 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    substrate = {
+      url = "git+ssh://git@github.com/pleme-io/substrate.git";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+    pleme-linker = {
+      url = "git+ssh://git@github.com/pleme-io/pleme-linker.git";
+    };
   };
 
-  outputs = { nixpkgs, flake-utils, self, ... }:
+  outputs = { nixpkgs, flake-utils, substrate, pleme-linker, self, ... }:
     flake-utils.lib.eachDefaultSystem (system: let
       pkgs = nixpkgs.legacyPackages.${system};
 
-      # Import nix-lib for TypeScript tool building
-      nixLib = import (self + "/../../../products/novaskyn/services/rust/nix-lib/lib") {
-        inherit pkgs;
+      substrateLib = substrate.libFor {
+        inherit pkgs system;
       };
 
-      # Build pleme-linker
-      plemeLinker = nixLib.mkPlemeLinker {
-        plemeLinkerSrc = self + "/../../rust/pleme-linker";
-      };
+      plemeLinkerPkg = pleme-linker.packages.${system}.default;
 
-      # Build curupira-mcp-server - auto-discovers everything from package.json and deps.nix
-      mcpServer = nixLib.mkTypescriptToolAuto {
+      mcpServer = substrateLib.mkTypescriptToolAuto {
         src = self + "/mcp-server";
-        inherit plemeLinker;
+        plemeLinker = plemeLinkerPkg;
         parentTsconfig = self + "/tsconfig.json";
-        workspaceRoot = self;  # For resolving workspace packages like @curupira/shared
+        workspaceRoot = self;
       };
 
-      # Regeneration app
-      regenApp = nixLib.mkTypescriptRegenApp {
+      regenApp = substrateLib.mkTypescriptRegenApp {
         name = "curupira";
-        inherit plemeLinker;
+        plemeLinker = plemeLinkerPkg;
         projectDirs = [ (self + "/shared") (self + "/mcp-server") ];
       };
 
     in {
       packages = {
-        mcp-server = mcpServer;
         default = mcpServer;
-        pleme-linker = plemeLinker;
+        mcp-server = mcpServer;
       };
 
       apps = {
-        mcp = { type = "app"; program = "${mcpServer}/bin/curupira-mcp"; };
         default = { type = "app"; program = "${mcpServer}/bin/curupira-mcp"; };
+        mcp = { type = "app"; program = "${mcpServer}/bin/curupira-mcp"; };
         "regen:all" = { type = "app"; program = "${regenApp}"; };
       };
 
       devShells.default = pkgs.mkShell {
         buildInputs = with pkgs; [ nodejs_20 ];
-        nativeBuildInputs = [ plemeLinker ];
+        nativeBuildInputs = [ plemeLinkerPkg ];
         shellHook = ''
           echo "Curupira development environment"
           echo "  pleme-linker resolve --project shared       - Regenerate shared/deps.nix"
