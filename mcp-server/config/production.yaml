@@ -1,0 +1,38 @@
+# Production environment overrides
+# Inherits from base.yaml
+
+server:
+  environment: "production"
+  host: "0.0.0.0"
+  port: 8080
+
+logging:
+  level: "warn"
+  pretty: false
+  format: "json"
+
+auth:
+  enabled: true
+  # jwtSecret should be overridden via ENVVAR
+
+cors:
+  origins:
+    - "https://app.example.com"
+    - "https://admin.example.com"
+
+rateLimit:
+  max: 1000
+  window: 60000
+
+# MinIO configuration for production
+# Using the Kubernetes MinIO instance
+storage:
+  minio:
+    enabled: true
+    endPoint: "minio.storage.svc.cluster.local"
+    port: 9000
+    useSSL: false
+    # accessKey and secretKey should be overridden via ENVVARs
+    bucket: "curupira-production"
+    region: "us-east-1"
+    signedUrlExpiry: 7200  # 2 hours

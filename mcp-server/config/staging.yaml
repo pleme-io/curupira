@@ -1,0 +1,27 @@
+# Staging environment overrides
+# Inherits from base.yaml
+
+server:
+  environment: "staging"
+  host: "0.0.0.0"
+  port: 8080
+
+logging:
+  level: "debug"
+  pretty: false
+
+# MinIO configuration for staging
+# Using PLO cluster MinIO instance
+storage:
+  minio:
+    enabled: true
+    # Since we're running from host, use the NodePort endpoint
+    endPoint: "minio.infrastructure.plo.quero.local"
+    port: 31900
+    useSSL: false
+    # These should be overridden via environment variables
+    accessKey: "minioadmin"
+    secretKey: "minioadmin"
+    bucket: "curupira-staging"
+    region: "us-east-1"
+    signedUrlExpiry: 3600  # 1 hour

@@ -1,0 +1,36 @@
+{
+  "root": true,
+  "parser": "@typescript-eslint/parser",
+  "parserOptions": {
+    "ecmaVersion": 2022,
+    "sourceType": "module"
+  },
+  "env": {
+    "node": true,
+    "es2022": true,
+    "browser": true
+  },
+  "extends": [
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended",
+    "prettier"
+  ],
+  "plugins": ["@typescript-eslint", "import"],
+  "rules": {
+    "@typescript-eslint/explicit-function-return-type": "off",
+    "@typescript-eslint/explicit-module-boundary-types": "off",
+    "@typescript-eslint/no-explicit-any": "off",
+    "@typescript-eslint/no-unused-vars": "off",
+    "@typescript-eslint/consistent-type-imports": "off",
+    "import/order": "off",
+    "no-console": "off"
+  },
+  "overrides": [
+    {
+      "files": ["*.test.ts", "*.spec.ts"],
+      "env": {
+        "jest": true
+      }
+    }
+  ]
+}

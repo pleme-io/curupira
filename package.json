@@ -1,0 +1,108 @@
+{
+  "name": "curupira",
+  "version": "2.12.0",
+  "description": "MCP Frontend Debugging Tool - AI-powered debugging for React applications",
+  "private": false,
+  "type": "module",
+  "workspaces": [
+    "mcp-server",
+    "chrome-extension",
+    "shared",
+    "cli"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "// === DEVELOPMENT === ": "",
+    "dev": "concurrently -n server,extension \"npm:dev:*\"",
+    "dev:server": "cd mcp-server && npm run dev",
+    "dev:host": "cd mcp-server && node dist/cli.js stdio --config ../config/host.yaml",
+    "dev:extension": "cd chrome-extension && npm run dev",
+    "dev:shared": "cd shared && npm run dev",
+    "// === BUILDING === ": "",
+    "build": "tsx build.ts",
+    "build:clean": "tsx build.ts --clean",
+    "build:staging": "NODE_ENV=staging npm run build",
+    "// === RELEASE & DEPLOYMENT === ": "",
+    "docker:release": "npm run version:sync && npm run version:bump:patch && npm run build && npm run docker:push",
+    "docker:release:minor": "npm run version:sync && npm run version:bump:minor && npm run build && npm run docker:push",
+    "docker:release:major": "npm run version:sync && npm run version:bump:major && npm run build && npm run docker:push",
+    "docker:push": "docker buildx build --platform linux/amd64,linux/arm64 -t drzzln/curupira:latest -t drzzln/curupira:$(node -p \"require('./package.json').version\") --push .",
+    "docker:build": "docker buildx build --platform linux/amd64,linux/arm64 -t drzzln/curupira:latest .",
+    "// === VERSION MANAGEMENT === ": "",
+    "version:sync": "node -e \"const pkg=require('./package.json'); const fs=require('fs'); ['mcp-server','cli','shared','auth','integration','e2e','mcp'].forEach(ws=>{ const p='./'+ws+'/package.json'; if(fs.existsSync(p)){ const w=JSON.parse(fs.readFileSync(p)); w.version=pkg.version; fs.writeFileSync(p, JSON.stringify(w, null, 2)+'\\n'); } });\"",
+    "version:bump:patch": "npm version patch --no-git-tag-version",
+    "version:bump:minor": "npm version minor --no-git-tag-version",
+    "version:bump:major": "npm version major --no-git-tag-version",
+    "// === TESTING === ": "",
+    "test": "npm run test:verify:all",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:verify:all": "npm run test:verify:core && npm run test:verify:integration && echo '🎉 All Core Tests Verified!'",
+    "test:verify:core": "cd mcp-server && npx vitest run src/__tests__/mcp/tools/ src/__tests__/mcp/resources/",
+    "test:verify:integration": "cd mcp-server && npx vitest run src/__tests__/integration/mcp-server.test.ts",
+    "// === CODE QUALITY === ": "",
+    "lint": "eslint . --ext .ts,.tsx,.js,.jsx --fix",
+    "lint:check": "eslint . --ext .ts,.tsx,.js,.jsx",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "type-check": "tsc --noEmit",
+    "quality": "npm run lint:check && npm run format:check && npm run type-check",
+    "quality:fix": "npm run lint && npm run format",
+    "// === SETUP & INSTALLATION === ": "",
+    "install:all": "npm install && npm run install:workspaces",
+    "install:workspaces": "npm install --workspaces",
+    "setup": "npm run install:all && npm run build:shared",
+    "clean": "rm -rf dist */dist *.tsbuildinfo */*.tsbuildinfo node_modules */node_modules",
+    "reset": "npm run clean && npm run setup",
+    "// === LOCAL DOCKER === ": "",
+    "docker:dev": "docker-compose up -d && docker-compose logs -f curupira",
+    "docker:stop": "docker-compose down",
+    "docker:logs": "docker-compose logs -f curupira",
+    "docker:shell": "docker-compose exec curupira sh",
+    "// === DEPLOYMENT === ": "",
+    "deploy:staging": "npm run build:staging && npm run docker:build && ./scripts/deploy-staging.sh",
+    "deploy:check": "kubectl -n novaskyn-staging get pods -l app=curupira"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "debugging",
+    "react",
+    "devtools",
+    "chrome-extension",
+    "ai-assistant"
+  ],
+  "author": "Nexus Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/drzln/curupira.git"
+  },
+  "bugs": {
+    "url": "https://github.com/drzln/curupira/issues"
+  },
+  "homepage": "https://github.com/drzln/curupira#readme",
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10",
+    "@typescript-eslint/eslint-plugin": "^8.44.0",
+    "@typescript-eslint/parser": "^8.44.0",
+    "concurrently": "^8.2.0",
+    "eslint": "^8.56.0",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
+    "prettier": "^3.2.0",
+    "typescript": "^5.3.0",
+    "vitest": "^1.2.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.0",
+    "ws": "^8.16.0"
+  }
+}

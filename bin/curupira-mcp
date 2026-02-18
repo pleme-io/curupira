@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Curupira MCP Server - runs via Nix (builds if needed, instant if cached)
+exec nix run "$(dirname "$0")/..#mcp" -- "$@"
