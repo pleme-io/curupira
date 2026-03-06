@@ -11,6 +11,10 @@
     pleme-linker = {
       url = "git+ssh://git@github.com/pleme-io/pleme-linker.git";
     };
+    devenv = {
+      url = "github:cachix/devenv";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = { nixpkgs, flake-utils, substrate, pleme-linker, self, ... }:
