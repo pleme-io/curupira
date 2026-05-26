@@ -228,11 +228,11 @@
         "pre-commit-hooks": "pre-commit-hooks"
       },
       "locked": {
-        "lastModified": 1774369503,
-        "narHash": "sha256-YeCF4iBhlvTqkn4mihjZgixnDcEVgfyQlNeBsbLYUgQ=",
+        "lastModified": 1779717186,
+        "narHash": "sha256-WAmzV4ohaVEqZ4Zs2G0Gb/t9iY3KuQ7bg3rLNcjIhM4=",
         "owner": "nix-community",
         "repo": "crate2nix",
-        "rev": "b873ca53dd64e12340416f0fd5e3b33792b9c17b",
+        "rev": "c994c83963b42b26f127e9cc50a8c86852db67d0",
         "type": "github"
       },
       "original": {
@@ -261,11 +261,11 @@
     "crate2nix_4": {
       "flake": false,
       "locked": {
-        "lastModified": 1774369503,
-        "narHash": "sha256-YeCF4iBhlvTqkn4mihjZgixnDcEVgfyQlNeBsbLYUgQ=",
+        "lastModified": 1779717186,
+        "narHash": "sha256-WAmzV4ohaVEqZ4Zs2G0Gb/t9iY3KuQ7bg3rLNcjIhM4=",
         "owner": "nix-community",
         "repo": "crate2nix",
-        "rev": "b873ca53dd64e12340416f0fd5e3b33792b9c17b",
+        "rev": "c994c83963b42b26f127e9cc50a8c86852db67d0",
         "type": "github"
       },
       "original": {
@@ -351,11 +351,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1779717400,
-        "narHash": "sha256-B/jXOCq7m0TlWp1J1mVwlk4qSz4gSa25kDf1D0HqG88=",
+        "lastModified": 1779749056,
+        "narHash": "sha256-AtocdrunzuxTvSDn+82RntEhrs6TicM6Z4/zNQS9KKg=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "3fe1f122a2884a6995014d952d039367d6d77001",
+        "rev": "099ac65fcef79e88127bdc06adbd1ea94255274a",
         "type": "github"
       },
       "original": {
@@ -381,11 +381,11 @@
         "rust-overlay": "rust-overlay_2"
       },
       "locked": {
-        "lastModified": 1779636362,
-        "narHash": "sha256-Q/hy/ybvbe91fjA1MbulUwPjJH9yKaFZnSaTkwLE8S0=",
+        "lastModified": 1779717400,
+        "narHash": "sha256-B/jXOCq7m0TlWp1J1mVwlk4qSz4gSa25kDf1D0HqG88=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "9d6e68dac81fab1f7f2ec6784220151b4fba4b59",
+        "rev": "3fe1f122a2884a6995014d952d039367d6d77001",
         "type": "github"
       },
       "original": {
@@ -503,11 +503,11 @@
         "rust-analyzer-src": "rust-analyzer-src"
       },
       "locked": {
-        "lastModified": 1779612045,
-        "narHash": "sha256-+7lfNVnmXJDkiRYHd5NoNwYoyUcc0LcXPaIJqjO7VWM=",
+        "lastModified": 1779704612,
+        "narHash": "sha256-J0HFmpzCC/qY4QnPG6o3OTolZejSjg2KBbgyodyuD9Q=",
         "owner": "nix-community",
         "repo": "fenix",
-        "rev": "d7be747f0a65af378de515fc3cee131bf99a008f",
+        "rev": "fd67f3ee990cb1b3fc06f4f83c494c4f782ac467",
         "type": "github"
       },
       "original": {
@@ -1653,11 +1653,11 @@
         "nixpkgs": "nixpkgs_3"
       },
       "locked": {
-        "lastModified": 1779661237,
-        "narHash": "sha256-ZKt1BfhTXRcDl0ZMYcmXjIQTmbgVU0UvqLIc6CRiJ6g=",
+        "lastModified": 1779720478,
+        "narHash": "sha256-oAz9SuCB3Engn1mfk10VAb6zqHWL7QNd/QAMIeGbNsM=",
         "ref": "refs/heads/main",
-        "rev": "e35e4887e16de1e99c18580b6474fe16ff732517",
-        "revCount": 21,
+        "rev": "00581db1a73fd5bb831185653381e3c8b126d8d2",
+        "revCount": 22,
         "type": "git",
         "url": "ssh://git@github.com/pleme-io/pleme-linker.git"
       },
@@ -1768,11 +1768,11 @@
     "rust-analyzer-src": {
       "flake": false,
       "locked": {
-        "lastModified": 1779569060,
-        "narHash": "sha256-NSnk5D+3KEfRdbgPijs33N2RAKSG6A74SwfnynLcouo=",
+        "lastModified": 1779616926,
+        "narHash": "sha256-0XU9z2w0guTsnYiudijlc5tLoHESldL/X1yPCpTZByY=",
         "owner": "rust-lang",
         "repo": "rust-analyzer",
-        "rev": "987ea33645ab1c709b1df6823038abcb2fe8973e",
+        "rev": "de5824b6d0457b0e35cb77de2c0d99402d63770f",
         "type": "github"
       },
       "original": {
@@ -1858,11 +1858,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1779675207,
-        "narHash": "sha256-/zBBG9Zi0dABnEq75LsiKXCPDC/fBhClJOgdOz/wx/4=",
+        "lastModified": 1779764147,
+        "narHash": "sha256-K13xD6wy+svUCNcVC826rGQvOjhX14dSOZaylikLq2k=",
         "ref": "refs/heads/main",
-        "rev": "f357dfc2b1faf86bc1fcd9edb776df2962dbb204",
-        "revCount": 349,
+        "rev": "85834790de296b29536b0ab41ff993efa354935e",
+        "revCount": 354,
         "type": "git",
         "url": "ssh://git@github.com/pleme-io/substrate.git"
       },
