@@ -537,11 +537,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1780459148,
-        "narHash": "sha256-oIpiel88r8zV/WqTFwcGAjWXKOASHNzq7wjXQ6ORTvg=",
+        "lastModified": 1780500574,
+        "narHash": "sha256-v4t3Y2HuvmyD3vATP1ndK6cnG5Upu59ijIdl/Myw85A=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "493ed7ef062ba3972c06e60970fe5ebe014f5c33",
+        "rev": "baeb5af8e4561f3fec36e2a2fb1cdfbd8c9ccc3f",
         "type": "github"
       },
       "original": {
@@ -2592,11 +2592,11 @@
         "substrate": "substrate"
       },
       "locked": {
-        "lastModified": 1780463050,
-        "narHash": "sha256-WxLzs8ure/j2h0xdOe6fq33ucOby+AUMuIFi7weqiVA=",
+        "lastModified": 1780497332,
+        "narHash": "sha256-rGz1MmaQ8248W7dxSIGSlgPRWVsAFDzSuVfPWXJMvMg=",
         "ref": "refs/heads/main",
-        "rev": "043ddd889517c88f72e28c8900fa707ac5db41d0",
-        "revCount": 61,
+        "rev": "ca4fab8b9f222ac258f20ac3d88f610099653a2d",
+        "revCount": 63,
         "type": "git",
         "url": "ssh://git@github.com/pleme-io/pleme-linker.git"
       },
@@ -2905,11 +2905,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1780431594,
-        "narHash": "sha256-tK3gxji0x8J1P8yJHzD9WknpOnR7WAXmVZQ/Zi0xASo=",
+        "lastModified": 1780491021,
+        "narHash": "sha256-w1u2d9ZHQ4Jliimd6R9W1KcWKRpgB3u+n0UE3pXrQAU=",
         "owner": "pleme-io",
         "repo": "substrate",
-        "rev": "505f45d66d94bc8d28b07acd68026d848be708ff",
+        "rev": "25cd7b2b995ede15ad1fa82933d225eabbd1bdfd",
         "type": "github"
       },
       "original": {
@@ -2930,11 +2930,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1780431594,
-        "narHash": "sha256-tK3gxji0x8J1P8yJHzD9WknpOnR7WAXmVZQ/Zi0xASo=",
+        "lastModified": 1780491021,
+        "narHash": "sha256-w1u2d9ZHQ4Jliimd6R9W1KcWKRpgB3u+n0UE3pXrQAU=",
         "ref": "refs/heads/main",
-        "rev": "505f45d66d94bc8d28b07acd68026d848be708ff",
-        "revCount": 553,
+        "rev": "25cd7b2b995ede15ad1fa82933d225eabbd1bdfd",
+        "revCount": 560,
         "type": "git",
         "url": "ssh://git@github.com/pleme-io/substrate.git"
       },
