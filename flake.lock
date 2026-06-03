@@ -537,11 +537,11 @@
         "rust-overlay": "rust-overlay"
       },
       "locked": {
-        "lastModified": 1780316214,
-        "narHash": "sha256-X3EG0oxt03MegwC/MnQv1saoq9nphEGSSGEAj8mZQOg=",
+        "lastModified": 1780459148,
+        "narHash": "sha256-oIpiel88r8zV/WqTFwcGAjWXKOASHNzq7wjXQ6ORTvg=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "d5e9138bae90fe199fbe5de7675014d76d28873b",
+        "rev": "493ed7ef062ba3972c06e60970fe5ebe014f5c33",
         "type": "github"
       },
       "original": {
@@ -567,11 +567,11 @@
         "rust-overlay": "rust-overlay_2"
       },
       "locked": {
-        "lastModified": 1780316214,
-        "narHash": "sha256-X3EG0oxt03MegwC/MnQv1saoq9nphEGSSGEAj8mZQOg=",
+        "lastModified": 1780459148,
+        "narHash": "sha256-oIpiel88r8zV/WqTFwcGAjWXKOASHNzq7wjXQ6ORTvg=",
         "owner": "cachix",
         "repo": "devenv",
-        "rev": "d5e9138bae90fe199fbe5de7675014d76d28873b",
+        "rev": "493ed7ef062ba3972c06e60970fe5ebe014f5c33",
         "type": "github"
       },
       "original": {
@@ -2592,11 +2592,11 @@
         "substrate": "substrate"
       },
       "locked": {
-        "lastModified": 1780331042,
-        "narHash": "sha256-+0gTkcSqlrVDGXZ0VYHIYbONfM14QDkUHmiY3OfJFt0=",
+        "lastModified": 1780463050,
+        "narHash": "sha256-WxLzs8ure/j2h0xdOe6fq33ucOby+AUMuIFi7weqiVA=",
         "ref": "refs/heads/main",
-        "rev": "b5f2bce9ca65944220c15fed2293762ea11a7cdd",
-        "revCount": 58,
+        "rev": "043ddd889517c88f72e28c8900fa707ac5db41d0",
+        "revCount": 61,
         "type": "git",
         "url": "ssh://git@github.com/pleme-io/pleme-linker.git"
       },
@@ -2905,11 +2905,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1780325254,
-        "narHash": "sha256-hu/Z0DfURNrRQjmxaIGnaPk2HEOwO3n436dSMo4j63E=",
+        "lastModified": 1780431594,
+        "narHash": "sha256-tK3gxji0x8J1P8yJHzD9WknpOnR7WAXmVZQ/Zi0xASo=",
         "owner": "pleme-io",
         "repo": "substrate",
-        "rev": "236fa9a3501c145f7b4a16dca71fd461c5b99654",
+        "rev": "505f45d66d94bc8d28b07acd68026d848be708ff",
         "type": "github"
       },
       "original": {
@@ -2930,11 +2930,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1780325254,
-        "narHash": "sha256-hu/Z0DfURNrRQjmxaIGnaPk2HEOwO3n436dSMo4j63E=",
+        "lastModified": 1780431594,
+        "narHash": "sha256-tK3gxji0x8J1P8yJHzD9WknpOnR7WAXmVZQ/Zi0xASo=",
         "ref": "refs/heads/main",
-        "rev": "236fa9a3501c145f7b4a16dca71fd461c5b99654",
-        "revCount": 535,
+        "rev": "505f45d66d94bc8d28b07acd68026d848be708ff",
+        "revCount": 553,
         "type": "git",
         "url": "ssh://git@github.com/pleme-io/substrate.git"
       },
