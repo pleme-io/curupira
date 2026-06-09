@@ -2,11 +2,10 @@
   description = "Curupira MCP debugging server for React apps";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
+    nixpkgs.follows = "substrate/nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
     substrate = {
       url = "git+ssh://git@github.com/pleme-io/substrate.git";
-      inputs.nixpkgs.follows = "nixpkgs";
     };
     pleme-linker = {
       url = "git+ssh://git@github.com/pleme-io/pleme-linker.git";
