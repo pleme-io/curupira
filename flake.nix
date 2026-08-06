@@ -5,10 +5,10 @@
     nixpkgs.follows = "substrate/nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
     substrate = {
-      url = "git+ssh://git@github.com/pleme-io/substrate.git";
+      url = "github:pleme-io/substrate";
     };
     pleme-linker = {
-      url = "git+ssh://git@github.com/pleme-io/pleme-linker.git";
+      url = "github:pleme-io/pleme-linker";
     };
     devenv = {
       url = "github:cachix/devenv";
