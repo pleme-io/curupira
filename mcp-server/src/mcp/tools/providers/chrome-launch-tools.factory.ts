@@ -71,6 +71,13 @@ async function waitForCDP(host: string, port: number, timeout: number = 30000): 
  * Auto-detects from X11 sockets if not set in environment
  */
 function detectDisplay(): string | null {
+  // Only X11/Wayland platforms have a DISPLAY at all. macOS (Quartz) and
+  // Windows drive their own window server, so there is nothing to detect and
+  // nothing to pass through to Chrome.
+  if (process.platform !== 'linux') {
+    return null;
+  }
+
   // Check if DISPLAY is already set
   if (process.env.DISPLAY) {
     return process.env.DISPLAY;
@@ -225,7 +232,10 @@ class ChromeLaunchToolProvider extends ChromeIndependentToolProvider {
 
           // Detect DISPLAY for X11/Wayland
           const display = detectDisplay();
-          if (!display && !args.headless) {
+          // A missing DISPLAY only blocks a GUI launch where a GUI actually
+          // needs one. Gating this on every platform made chrome_launch
+          // unusable on macOS, which has no DISPLAY by construction.
+          if (process.platform === 'linux' && !display && !args.headless) {
             return {
               success: false,
               error: 'No DISPLAY detected - cannot launch Chrome in GUI mode',
