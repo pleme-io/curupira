@@ -63,6 +63,7 @@ import { ReactRouterToolProviderFactory } from '../../mcp/tools/providers/react-
 import { FramerMotionToolProviderFactory } from '../../mcp/tools/providers/framer-motion-tools.factory.js';
 import { ChromeLaunchToolProviderFactory } from '../../mcp/tools/providers/chrome-launch-tools.factory.js';
 import { StagingLoginToolProviderFactory } from '../../mcp/tools/providers/staging-login-tools.factory.js';
+import { SiteToolProviderFactory } from '../../mcp/tools/providers/site-tools.factory.js';
 
 // Resource provider factories
 import { createBrowserResourceProvider } from '../../mcp/resources/browser.js';
@@ -287,7 +288,11 @@ export function registerToolProviders(container: Container): void {
     new ReactRouterToolProviderFactory(),
     new FramerMotionToolProviderFactory(),
     new ChromeLaunchToolProviderFactory(),
-    new StagingLoginToolProviderFactory()
+    new StagingLoginToolProviderFactory(),
+    // Site plugins: tools generated from declarative console profiles. Loads a
+    // bundle from the operator's config dir; a missing bundle is normal and
+    // registers only the two context tools.
+    new SiteToolProviderFactory()
   ];
 
   // Conditionally add screenshot tools if enabled in configuration

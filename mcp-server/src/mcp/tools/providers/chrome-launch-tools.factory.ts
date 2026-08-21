@@ -21,6 +21,7 @@ const launchSchema: Schema<{
   url?: string;
   headless?: boolean;
   userDataDir?: string;
+  replaceExisting?: boolean;
 }> = {
   parse: (value) => {
     const obj = (value || {}) as Record<string, unknown>;
@@ -29,6 +30,8 @@ const launchSchema: Schema<{
       url: typeof obj.url === 'string' ? obj.url : undefined,
       headless: typeof obj.headless === 'boolean' ? obj.headless : false,
       userDataDir: typeof obj.userDataDir === 'string' ? obj.userDataDir : undefined,
+      replaceExisting:
+        typeof obj.replaceExisting === 'boolean' ? obj.replaceExisting : false,
     };
   },
   safeParse: (value) => {
@@ -64,6 +67,27 @@ async function waitForCDP(host: string, port: number, timeout: number = 30000): 
   }
 
   return false;
+}
+
+/**
+ * Is a Chrome already listening on this debugging port?
+ *
+ * Returns its version banner, or null. Used to ADOPT a running instance rather
+ * than terminate it: an existing Chrome on a debugging port is very often the
+ * one holding a logged-in profile, and killing it discards a session the caller
+ * cannot get back without re-authenticating.
+ */
+async function probeExistingChrome(port: number): Promise<Record<string, unknown> | null> {
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 1500);
+    const res = await fetch(`http://localhost:${port}/json/version`, { signal: ctl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -391,6 +415,11 @@ class ChromeLaunchToolProvider extends ChromeIndependentToolProvider {
             headless: {
               type: 'boolean',
               description: 'Run Chrome in headless mode (default: false)',
+            },
+            replaceExisting: {
+              type: 'boolean',
+              description:
+                'Terminate a Chrome already listening on this port before launching. Default false: an existing instance is ADOPTED instead, because it is often the one holding a logged-in session.',
             },
             userDataDir: {
               type: 'string',
