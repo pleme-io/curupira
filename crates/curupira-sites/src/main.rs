@@ -47,6 +47,17 @@ enum Cmd {
         #[arg(long, default_value_t = 6000)]
         timeout_ms: u64,
     },
+    /// Emit a READ-ONLY profile from a draft: pages and reads kept, every
+    /// unreviewed control dropped.
+    Curate {
+        #[arg(required = true)]
+        dir: PathBuf,
+        #[arg(long)]
+        id: String,
+        /// URL substrings the curated profile may claim.
+        #[arg(long = "match", required = true)]
+        match_urls: Vec<String>,
+    },
     /// Render a SKILL.md for each profile in DIRS.
     Skill {
         #[arg(required = true)]
@@ -129,6 +140,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "drafted {} page(s); every control is `mutate` until you classify it, and `match` \
                  is empty so this profile claims no tab yet",
                 draft.pages.len()
+            );
+            Ok(())
+        }
+        Cmd::Curate { dir, id, match_urls } => {
+            let profiles = load_all(&[dir])?;
+            let [draft] = &profiles[..] else {
+                return Err(format!(
+                    "curate takes exactly one draft profile; found {}",
+                    profiles.len()
+                )
+                .into());
+            };
+            let dropped: usize = draft.pages.iter().map(|p| p.actions.len()).sum();
+            let ro = curupira_sites::mapper::read_only(draft, &id, match_urls);
+            ro.validate()?;
+            println!("{}", serde_yaml::to_string(&ro)?);
+            eprintln!(
+                "curated '{}' -> '{}': {} page(s) kept, {} unreviewed control(s) dropped. \
+                 Read-only by construction; the draft keeps them for review.",
+                draft.id, id, ro.pages.len(), dropped
             );
             Ok(())
         }

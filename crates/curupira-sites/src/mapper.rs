@@ -526,6 +526,34 @@ fn slugish(s: &str) -> String {
     out.trim_matches('-').to_string()
 }
 
+/// Turn a draft into a **read-only** profile: pages and reads kept, every
+/// unreviewed control dropped.
+///
+/// This is the honest first curation of a mapper draft. The mapper classifies
+/// everything it finds as mutating because it never clicks and cannot know, so a
+/// raw draft carries a large set of controls nobody has decided about. Shipping
+/// those as tools would present undecided things as usable; dropping them
+/// produces a profile that is read-only BY CONSTRUCTION and can therefore be
+/// handed the site's match patterns safely.
+///
+/// It REMOVES rather than demotes, deliberately. Demoting to `observe` would be
+/// a guess about what a control does; removing states only what is known — that
+/// nobody has reviewed it yet. The draft retains the full set for later review.
+#[must_use]
+pub fn read_only(profile: &ConsoleProfile, id: &str, match_urls: Vec<String>) -> ConsoleProfile {
+    ConsoleProfile {
+        id: id.to_string(),
+        base_url: profile.base_url.clone(),
+        match_urls,
+        terminal: profile.terminal.clone(),
+        pages: profile
+            .pages
+            .iter()
+            .map(|p| Page { actions: Vec::new(), ..p.clone() })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,6 +671,31 @@ mod tests {
         // All-decoration is left alone rather than reduced to something that
         // would match half the page.
         assert_eq!(core_label(">>>"), ">>>");
+    }
+
+    #[test]
+    fn the_read_only_curation_drops_undecided_controls_rather_than_demoting_them() {
+        // Demoting to observe would be a GUESS about what a control does.
+        // Removing states only what is known: nobody has reviewed it.
+        let draft = draft_profile("d", "https://c.example.invalid", &[survey()]).unwrap();
+        assert_eq!(draft.pages[0].actions.len(), 2);
+
+        let ro = read_only(&draft, "curated", vec!["c.example.invalid".into()]);
+        assert!(ro.pages[0].actions.is_empty(), "controls must be dropped");
+        assert_eq!(ro.pages[0].reads.len(), draft.pages[0].reads.len(), "reads kept");
+        assert_eq!(ro.match_urls, vec!["c.example.invalid".to_string()], "may now claim its tab");
+        ro.validate().expect("curated profile must be valid");
+        assert!(ro.lints().is_empty(), "{:?}", ro.lints());
+    }
+
+    #[test]
+    fn a_curated_profile_compiles_to_tools_none_of_which_mutate() {
+        let draft = draft_profile("d", "https://c.example.invalid", &[survey()]).unwrap();
+        let ro = read_only(&draft, "curated", vec!["c.example.invalid".into()]);
+        let b = crate::toolgen::Bundle::compile(&[ro]).unwrap();
+        let mutating = b.sites[0].tools.iter().filter(|t| t.effect == Some(Effect::Mutate)).count();
+        assert_eq!(mutating, 0, "a read-only curation must expose no mutating tool");
+        assert!(!b.sites[0].tools.is_empty());
     }
 
     #[test]
