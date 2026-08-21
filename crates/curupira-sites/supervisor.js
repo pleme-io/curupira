@@ -21,7 +21,7 @@
 // It is a supervisor, not a policy: it never types a command and never clicks
 // anything except the terminal's own Connect/Disconnect controls.
 (() => {
-  const VERSION = '0.1.0';
+  const VERSION = '0.2.0';
   if (window.WTS && window.WTS.version === VERSION) return 'WTS already ' + VERSION;
 
   const CFG = (window.__CURUPIRA_SITES && window.__CURUPIRA_SITES.driver) || {};
@@ -38,7 +38,7 @@
     out: '',
     // Counters, not booleans: "it reconnected 40 times in an hour" is a finding
     // about the backend, and a boolean would hide it.
-    stats: { connects: 0, drops: 0, heartbeats: 0, lastCloseCode: null, lastDropAt: null, startedAt: Date.now() },
+    stats: { connects: 0, drops: 0, heartbeats: 0, escalations: 0, consecutiveFailures: 0, lastCloseCode: null, lastDropAt: null, startedAt: Date.now() },
     running: false,
     _hb: null,
     _loop: null,
@@ -81,6 +81,8 @@
     alive() { return !!(this.sock && this.sock.readyState === 1); },
 
     bannerSeen: false,
+    // Set when a command is abandoned; cleared by a successful resync.
+    dirty: false,
 
     // Latch the banner when it arrives. It must be a LATCH, not a scan of the
     // current buffer: `run` clears `out` before each command, so a buffer-scan
@@ -127,9 +129,21 @@
       if (this.running) return 'already running';
       this._hook();
       this.running = true;
-      // First adoption forces a fresh socket through the hook; every later
-      // attempt must not, for the close_tunnel reason above.
+      // Recovery ESCALATES rather than picking one strategy.
+      //
+      // Disconnecting on every retry tears down the tunnel and makes reconnects
+      // expensive (measured: sockets opening and dying in a ~6s loop). But never
+      // disconnecting leaves a wedged UI unrecoverable — measured too: after two
+      // drops, plain Connect clicks stopped producing a socket AT ALL (the drop
+      // counter stopped moving, so nothing was even opening), and the session sat
+      // in `reconnecting` for twelve minutes. One forced Disconnect-then-Connect
+      // recovered it in 1.9s.
+      //
+      // So: plain Connect first — cheap and usually right — and escalate to a
+      // forced fresh socket only after it has failed repeatedly.
       let first = true;
+      let failures = 0;
+      const escalateAfter = opts.escalateAfter || 3;
       let backoff = 2000;
       const maxBackoff = opts.maxBackoffMs || 30000;
 
@@ -146,9 +160,18 @@
         if (!this.running) return;
         try {
           if (!this.alive()) {
-            const r = await this.connect(20000, first);
+            const force = first || failures >= escalateAfter;
+            const r = await this.connect(20000, force);
             first = false;
-            backoff = r.connected ? 2000 : Math.min(backoff * 2, maxBackoff);
+            if (r.connected) {
+              failures = 0;
+              this.stats.escalations = this.stats.escalations || 0;
+              backoff = 2000;
+            } else {
+              failures++;
+              if (force) this.stats.escalations = (this.stats.escalations || 0) + 1;
+              backoff = Math.min(backoff * 2, maxBackoff);
+            }
           } else {
             backoff = 1000;
           }
@@ -198,6 +221,12 @@
       if (!(await this.awaitReady(opts.readyTimeoutMs || 60000))) {
         return { ok: false, error: 'no ready session', status: this.status() };
       }
+      // A previous command was abandoned and may still be emitting. Get back to
+      // a known state before reading anything new.
+      if (this.dirty) {
+        const r = await this.resync();
+        if (!r.ok) return { ok: false, error: 'session dirty: ' + r.error, status: this.status() };
+      }
       const n = Math.random().toString(16).slice(2, 10) + Date.now().toString(16);
       const marker = '__WTS_' + n + '__';
       const payload = 'm=' + marker + '; ' + cmd + '; printf "\\n%s %d\\n" "$m" "$?"\n';
@@ -209,8 +238,32 @@
       }
       const re = new RegExp('\\n' + marker + ' (\\d+)\\r?\\n');
       const t0 = Date.now();
-      while (Date.now() - t0 < timeoutMs) {
+      // Deadline is based on PROGRESS, not just elapsed time.
+      //
+      // Measured 2026-08-21: grepping an 88MB binary five times ran well past a
+      // fixed timeout while the shell was healthily working — output was still
+      // arriving. Failing there reports "timeout" for a command that is simply
+      // slow, and, worse, its output lands later and corrupts the NEXT command's
+      // sentinel scan. So a command that is still producing output gets more
+      // time, bounded by an absolute cap.
+      const idleMs = opts.idleMs || 20000;
+      const hardCapMs = opts.hardCapMs || 300000;
+      let lastLen = 0;
+      let lastGrowth = Date.now();
+      while (Date.now() - t0 < hardCapMs) {
         await new Promise(r => setTimeout(r, 150));
+        const cur = (this.out || '').length;
+        if (cur !== lastLen) { lastLen = cur; lastGrowth = Date.now(); }
+        // Give up only when the command has been SILENT for idleMs and the
+        // nominal budget is spent — silence plus elapsed, never elapsed alone.
+        if (Date.now() - t0 > timeoutMs && Date.now() - lastGrowth > idleMs) {
+          this.dirty = true;
+          return {
+            ok: false,
+            error: 'no output for ' + idleMs + 'ms after ' + Math.round((Date.now()-t0)/1000) + 's',
+            partial: (this.out || '').slice(-400),
+          };
+        }
         const mm = (this.out || '').match(re);
         if (mm) {
           let out = this.out.slice(0, mm.index);
@@ -226,7 +279,40 @@
           return { ok: false, error: 'session dropped mid-command; supervisor is reconnecting', status: this.status() };
         }
       }
-      return { ok: false, error: 'timeout after ' + timeoutMs + 'ms', tail: (this.out || '').slice(-200) };
+      this.dirty = true;
+      return { ok: false, error: 'hard cap ' + hardCapMs + 'ms exceeded', tail: (this.out || '').slice(-300) };
+    },
+
+    // Bring a session back to a known state after a command was abandoned.
+    //
+    // An abandoned command keeps producing output, and that output arrives while
+    // the NEXT command is being read — so its sentinel scan can match stale text
+    // or miss entirely. Nothing detects that; the result is simply wrong. So a
+    // run that gives up marks the session `dirty`, and the next one resyncs
+    // first: interrupt, then round-trip a fresh marker until the reply is the
+    // marker and nothing else.
+    async resync(timeoutMs) {
+      timeoutMs = timeoutMs || 20000;
+      if (!this.alive()) return { ok: false, error: 'no session to resync' };
+      try { this.sock.send(JSON.stringify({ type: 'input', data: '\u0003' })); } catch (e) { /* interrupt is best-effort */ }
+      await new Promise(r => setTimeout(r, 400));
+      const tag = '__WTS_SYNC_' + Math.random().toString(16).slice(2, 10) + '__';
+      this.out = '';
+      try { this.sock.send(JSON.stringify({ type: 'input', data: 'echo ' + tag + '\n' })); }
+      catch (e) { return { ok: false, error: 'resync send failed: ' + e.message }; }
+      const t0 = Date.now();
+      while (Date.now() - t0 < timeoutMs) {
+        await new Promise(r => setTimeout(r, 150));
+        // Two occurrences: the echoed command and its output. Waiting for the
+        // second is what proves the shell has caught up with us.
+        if ((this.out.match(new RegExp(tag, 'g')) || []).length >= 2) {
+          this.out = '';
+          this.dirty = false;
+          return { ok: true, waitedMs: Date.now() - t0 };
+        }
+      }
+      this.dirty = true;
+      return { ok: false, error: 'resync timed out; session is still producing stale output' };
     },
 
     // What a caller should poll instead of guessing. Says which of the states
@@ -236,6 +322,7 @@
       const s = this.sock ? this.sock.readyState : null;
       return {
         supervising: this.running,
+        dirty: this.dirty,
         state: !this.running ? 'stopped'
           : this.ready() ? 'ready'
             : this.alive() ? 'open-no-banner'
