@@ -57,6 +57,17 @@ pub struct FoundList {
     pub items: usize,
 }
 
+/// A container whose children repeat one structure — a data grid in disguise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundRepeater {
+    pub selector: String,
+    pub items: usize,
+    /// Text of the first repeated child, so a reviewer can tell at a glance
+    /// what this collection holds without opening the console.
+    #[serde(default)]
+    pub sample: String,
+}
+
 /// A heading the mapper saw.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FoundHeading {
@@ -82,6 +93,9 @@ pub struct PageSurvey {
     /// Headings: the cheapest "did the right page render" read there is.
     #[serde(default)]
     pub headings: Vec<FoundHeading>,
+    /// Div-rendered data grids, found structurally rather than semantically.
+    #[serde(default)]
+    pub repeaters: Vec<FoundRepeater>,
     /// Elements carrying a stable-looking test id — the best selectors a console
     /// offers, and worth surfacing separately because they are what a reviewer
     /// should prefer.
@@ -100,6 +114,18 @@ pub struct PageSurvey {
     /// How long the mapper waited before surveying.
     #[serde(default)]
     pub waited_ms: u64,
+
+    /// Characters of text in the page's main region.
+    #[serde(default)]
+    pub text_len: usize,
+
+    /// Whether this looks like an interstitial (auth handshake, spinner) rather
+    /// than a page.
+    ///
+    /// Separate from `settled` because they answer different questions and only
+    /// one of them is about content: a waiting-room is perfectly still.
+    #[serde(default)]
+    pub interstitial: bool,
 }
 
 /// JS that surveys the CURRENT page. Reads only: no click, no submit, no
@@ -114,14 +140,36 @@ pub fn emit_survey() -> String {
     // resort and is flagged by being obviously fragile to whoever reviews it.
     r#"(() => {
   const txt = e => (e.textContent||'').replace(/\s+/g,' ').trim().slice(0,80);
+  // Selector strategy, in preference order. The class fallback is LAST and
+  // guarded: measured on a real console 2026-08-21, every container came back as
+  // `div.MuiBox-root` — a Material-UI generated class shared by hundreds of
+  // elements, so it addresses nothing. A class is only usable as an identifier
+  // if it is actually rare on the page, so that is now checked rather than
+  // assumed, and a structural nth-child path is used when it is not.
+  const pathOf = e => {
+    const parts = [];
+    for (let n = e; n && n.nodeType === 1 && n !== document.body; n = n.parentElement) {
+      if (n.id) { parts.unshift('#' + n.id); break; }
+      const t = n.getAttribute && n.getAttribute('data-testid');
+      if (t) { parts.unshift('[data-testid="' + t + '"]'); break; }
+      const sibs = n.parentElement ? Array.from(n.parentElement.children) : [n];
+      const i = sibs.indexOf(n) + 1;
+      parts.unshift(n.tagName.toLowerCase() + ':nth-child(' + i + ')');
+      if (parts.length > 6) break;
+    }
+    return parts.join(' > ');
+  };
   const sel = e => {
     if (e.id) return '#' + e.id;
     const t = e.getAttribute('data-testid');
     if (t) return '[data-testid="' + t + '"]';
     const c = (e.className && typeof e.className === 'string')
       ? e.className.trim().split(/\s+/)[0] : '';
-    if (c) return e.tagName.toLowerCase() + '.' + c;
-    return e.tagName.toLowerCase();
+    // A class earns the job only if it is nearly unique on this page.
+    if (c && document.querySelectorAll('.' + CSS.escape(c)).length <= 3) {
+      return e.tagName.toLowerCase() + '.' + c;
+    }
+    return pathOf(e);
   };
   const controls = Array.from(document.querySelectorAll('button,[role="button"]'))
     .map(e => ({ text: txt(e), kind: e.tagName.toLowerCase() }))
@@ -138,6 +186,35 @@ pub fn emit_survey() -> String {
     });
   const testIds = Array.from(document.querySelectorAll('[data-testid]'))
     .map(e => e.getAttribute('data-testid'));
+  // REPEATERS: a container whose children share one structural signature is a
+  // data grid, whatever its markup. Measured on a real console 2026-08-21: five
+  // data-heavy routes (Releases, Jobs, Agents, Dashboard, Workloads) reported
+  // ZERO tables and ZERO lists, because the console renders rows as plain divs
+  // with no <table> and no ARIA role. A mapper that only knows tables and lists
+  // reports those pages as having nothing to read, which is the opposite of
+  // true. Signature = tag + first class, so a repeated row is recognised even
+  // when nothing semantic marks it.
+  const repeaters = [];
+  for (const el of document.querySelectorAll('div,section,main,ul,tbody')) {
+    const kids = Array.from(el.children);
+    if (kids.length < 3) continue;
+    const sig = k => k.tagName + '.' + ((k.className && typeof k.className === 'string')
+      ? k.className.trim().split(/\s+/)[0] : '');
+    const first = sig(kids[0]);
+    if (!first || first.endsWith('.')) continue;
+    const same = kids.filter(k => sig(k) === first).length;
+    if (same < 3 || same / kids.length < 0.8) continue;
+    // A repeated structure with no text in it is layout, not data. Measured:
+    // without this, every page returned 3-4 identical empty MUI layout boxes
+    // and none of the actual rows.
+    const withText = kids.filter(k => txt(k).length >= 2).length;
+    if (withText < 3) continue;
+    repeaters.push({ selector: sel(el), items: same, sample: txt(kids[0]) });
+  }
+  // Keep the most specific: drop a repeater that merely contains another.
+  const reps = repeaters.filter(r =>
+    !repeaters.some(o => o !== r && o.selector !== r.selector && r.selector === 'div'));
+
   // Lists are content too. A console renders as much in <ul>/<ol> and ARIA
   // lists as it does in tables, and a mapper that only knows tables reports a
   // page as having nothing to read when it is full of readable data.
@@ -148,10 +225,27 @@ pub fn emit_survey() -> String {
   // read available.
   const headings = Array.from(document.querySelectorAll('h1,h2'))
     .map(h => ({ selector: sel(h), text: txt(h) })).filter(h => h.text);
+  // How much text the page's main region actually holds, and whether this looks
+  // like an interstitial rather than a page.
+  //
+  // Measured 2026-08-21, and it invalidated three rounds of mapping before it
+  // was caught: a freshly-created tab surveyed five routes and reported them all
+  // as having no tables and no lists. Every one was the string
+  // "Authenticating..." — 17 characters. The surveys were honest about
+  // `settled`, because an interstitial IS static and goes quiet at once.
+  //
+  // THAT is the trap: quiescence measures motion, not content. A survey must
+  // therefore carry enough for a caller to tell a real page from a waiting-room,
+  // or a map of nothing passes as a map.
+  const mainEl = document.querySelector('main') || document.body;
+  const mainText = (mainEl.innerText || '').trim();
+  const interstitial = mainText.length < 120 ||
+    /^(authenticating|loading|signing in|redirecting|please wait)/i.test(mainText);
   return {
     url: location.href, title: document.title,
+    text_len: mainText.length, interstitial,
     routes: [...new Set(routes)], controls,
-    tables, lists, headings, test_ids: [...new Set(testIds)]
+    tables, lists, headings, repeaters: reps, test_ids: [...new Set(testIds)]
   };
 })()"#
         .to_string()
@@ -215,7 +309,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
         let name = names[i].clone();
         let route = route_of(&s.url, base_url);
 
-        let mut reads = Vec::new();
+        let mut reads: Vec<Read> = Vec::new();
         for (n, t) in s.tables.iter().enumerate() {
             reads.push(Read {
                 name: if s.tables.len() == 1 { "rows".to_string() } else { format!("rows_{n}") },
@@ -227,6 +321,13 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             reads.push(Read {
                 name: if s.lists.len() == 1 { "items".to_string() } else { format!("items_{n}") },
                 locator: Locator::Selector(format!("{} li, {} [role=\"listitem\"]", l.selector, l.selector)),
+                kind: ReadKind::TextAll,
+            });
+        }
+        for (n, r) in s.repeaters.iter().enumerate() {
+            reads.push(Read {
+                name: if s.repeaters.len() == 1 { "rows".to_string() } else { format!("rows_{n}") },
+                locator: Locator::Selector(format!("{} > *", r.selector)),
                 kind: ReadKind::TextAll,
             });
         }
@@ -245,7 +346,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             });
         }
 
-        let actions = s
+        let mut actions: Vec<Action> = s
             .controls
             .iter()
             .map(|c| Action {
@@ -267,6 +368,24 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             })
             .collect();
 
+        // Names must be unique WITHIN a page too, not only across pages. Round 8
+        // measured why: a real console had several controls all labelled "View",
+        // which slugged to one action name and made `validate` refuse an entire
+        // 6-page draft over it. `uniquify` was applied to page names in F8 and
+        // not here — the same collision, one level down.
+        {
+            let mut names: Vec<String> = actions.iter().map(|a| a.name.clone()).collect();
+            uniquify(&mut names);
+            for (a, n) in actions.iter_mut().zip(names) {
+                a.name = n;
+            }
+            let mut rnames: Vec<String> = reads.iter().map(|r| r.name.clone()).collect();
+            uniquify(&mut rnames);
+            for (r, n) in reads.iter_mut().zip(rnames) {
+                r.name = n;
+            }
+        }
+
         // A ready signal the mapper can actually justify: the first table it saw
         // is content that only exists once the page rendered. Without one, the
         // lint would (correctly) refuse the draft the moment it has reads.
@@ -279,6 +398,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             .first()
             .map(|t| t.selector.clone())
             .or_else(|| s.lists.first().map(|l| l.selector.clone()))
+            .or_else(|| s.repeaters.first().map(|r| r.selector.clone()))
             .or_else(|| s.headings.first().map(|h| h.selector.clone()))
             .map(|sel| vec![ReadySignal::SelectorPresent(sel)])
             .unwrap_or_default();
@@ -392,8 +512,11 @@ mod tests {
             lists: vec![],
             headings: vec![FoundHeading { selector: "#title".into(), text: "Cluster 69".into() }],
             test_ids: vec!["region".into()],
+            repeaters: vec![],
             settled: true,
             waited_ms: 400,
+            text_len: 400,
+            interstitial: false,
         }
     }
 
@@ -452,6 +575,22 @@ mod tests {
         let a = &p.pages[0].actions[0];
         assert_eq!(a.name, "pods", "the name must not carry the count");
         assert_eq!(a.locator, Locator::ButtonTextPrefix("Pods".into()));
+    }
+
+    #[test]
+    fn controls_sharing_a_label_get_unique_action_names() {
+        // Round 8: a real console had several controls all labelled "View";
+        // they slugged to one name and validate() refused the whole draft.
+        let mut sv = survey();
+        sv.controls = vec![
+            FoundControl { text: "View".into(), kind: "button".into() },
+            FoundControl { text: "View".into(), kind: "button".into() },
+            FoundControl { text: "View".into(), kind: "button".into() },
+        ];
+        let p = draft_profile("d", "https://c.example.invalid", &[sv]).unwrap();
+        let names: Vec<&str> = p.pages[0].actions.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, vec!["view", "view-2", "view-3"], "{names:?}");
+        p.validate().expect("a draft must survive its own validator");
     }
 
     #[test]
