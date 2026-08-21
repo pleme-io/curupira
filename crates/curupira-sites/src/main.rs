@@ -86,6 +86,22 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Surveys taken while the page was still moving are called out
             // rather than folded in silently — an incomplete map that looks
             // complete is how a profile ends up missing half a console.
+            // An interstitial has no page surface, so folding it in produces a
+            // profile page that looks real and reads nothing. Refuse rather than
+            // warn: this is the failure that silently invalidated three rounds.
+            let waiting: Vec<&str> =
+                surveys.iter().filter(|s| s.interstitial).map(|s| s.url.as_str()).collect();
+            if !waiting.is_empty() {
+                return Err(format!(
+                    "{} survey(s) captured an INTERSTITIAL, not a page (auth handshake or \
+                     spinner): {}. Surveying an unauthenticated tab yields a map of nothing that \
+                     looks like a map of something — re-survey through an authenticated session.",
+                    waiting.len(),
+                    waiting.join(", ")
+                )
+                .into());
+            }
+
             let unsettled: Vec<&str> = surveys
                 .iter()
                 .filter(|s| !s.settled)
