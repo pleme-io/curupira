@@ -19,6 +19,19 @@
 
 use serde_json::to_string as js;
 
+/// How a generated read takes text off an element.
+///
+/// `innerText`, falling back to `textContent`. The difference is not cosmetic:
+/// **`textContent` returns the contents of `<style>` and `<script>` elements
+/// too.** Measured 2026-08-21 against a real console — a read of its main region
+/// came back beginning `@keyframes pulse-dot {`, i.e. a stylesheet presented as
+/// page data. `innerText` returns what a person would actually see.
+///
+/// The trade is real and accepted: `innerText` is layout-dependent, so it is
+/// slower and returns nothing for a hidden element. For a console read that is
+/// the RIGHT answer — hidden text is not something the operator can see either.
+const TEXT_OF: &str = "(e => e ? ((e.innerText !== undefined && e.innerText !== null) ? e.innerText : (e.textContent||'')).trim() : null)";
+
 use crate::error::Result;
 use crate::profile::{Locator, Read, ReadKind, ReadySignal};
 
@@ -110,8 +123,8 @@ pub fn emit_read(read: &Read) -> Result<String> {
     let one = emit_locate(&read.locator)?;
     let all = emit_locate_all(&read.locator)?;
     Ok(match &read.kind {
-        ReadKind::Text => format!("(e => e ? (e.textContent||'').trim() : null)({one})"),
-        ReadKind::TextAll => format!("{all}.map(e => (e.textContent||'').trim())"),
+        ReadKind::Text => format!("{TEXT_OF}({one})"),
+        ReadKind::TextAll => format!("{all}.map({TEXT_OF})"),
         ReadKind::Count => format!("{all}.length"),
         ReadKind::Attribute(a) => {
             format!("(e => e ? e.getAttribute({}) : null)({one})", js(a)?)
@@ -119,7 +132,7 @@ pub fn emit_read(read: &Read) -> Result<String> {
         ReadKind::Table => format!(
             "(root => root ? Array.from(root.querySelectorAll('tr,[role=\"row\"]')) \
              .map(r => Array.from(r.querySelectorAll('th,td,[role=\"cell\"],[role=\"columnheader\"]')) \
-             .map(c => (c.textContent||'').trim())).filter(r => r.length) : null)({one})"
+             .map({TEXT_OF})).filter(r => r.length) : null)({one})"
         ),
     })
 }
@@ -178,6 +191,25 @@ pub fn emit_ready_wait(signals: &[ReadySignal], timeout_ms: u64, poll_ms: u64) -
 /// nothing), `empty` (matched, but no content — a FINDING, not an error), or
 /// `found`.
 pub fn emit_read_checked(read: &Read) -> Result<String> {
+    emit_read_bounded(read, DEFAULT_READ_LIMIT)
+}
+
+/// Largest read a generated tool returns before truncating.
+///
+/// Measured 2026-08-21: a real console's log view rendered **249,751
+/// characters** of text in one pane. A read of that lands whole in the caller's
+/// context — for an agent, that is most of a window spent on one tool result,
+/// and for a human it is unreadable. Unbounded reads are not a theoretical risk
+/// on consoles; log and event views are exactly what people want to read.
+pub const DEFAULT_READ_LIMIT: usize = 20_000;
+
+/// [`emit_read_checked`] with an explicit cap.
+///
+/// Truncation is REPORTED, never silent: the result carries `truncated`, the
+/// original `totalLen` (or `totalItems`), and how much came back. A silently cut
+/// answer is worse than a big one, because the caller cannot tell a short log
+/// from a truncated one and will reason about the wrong thing.
+pub fn emit_read_bounded(read: &Read, limit: usize) -> Result<String> {
     let inner = emit_read(read)?;
     let present = match &read.kind {
         // Count is never "absent": zero IS the answer.
@@ -189,7 +221,20 @@ pub fn emit_read_checked(read: &Read) -> Result<String> {
         "(() => {{ const present = {present}; const v = {inner}; \
          if (!present) return {{status:'absent', value:null}}; \
          const empty = v === null || v === '' || (Array.isArray(v) && v.length === 0); \
-         return {{status: empty ? 'empty' : 'found', value: v}}; }})()"
+         if (empty) return {{status:'empty', value:v}}; \
+         const LIM = {limit}; \
+         if (typeof v === 'string' && v.length > LIM) \
+           return {{status:'found', truncated:true, totalLen:v.length, \
+                    returnedLen:LIM, value:v.slice(0,LIM)}}; \
+         if (Array.isArray(v)) {{ \
+           const flat = JSON.stringify(v); \
+           if (flat.length > LIM) {{ \
+             const keep = []; let used = 0; \
+             for (const row of v) {{ const r = JSON.stringify(row); \
+               if (used + r.length > LIM) break; keep.push(row); used += r.length; }} \
+             return {{status:'found', truncated:true, totalItems:v.length, \
+                      returnedItems:keep.length, value:keep}}; }} }} \
+         return {{status:'found', truncated:false, value:v}}; }})()"
     ))
 }
 
@@ -240,6 +285,51 @@ mod tests {
             .expect("emitted a single querySelector call");
         let back: String = serde_json::from_str(lit).expect("literal is well-formed JSON/JS string");
         assert_eq!(back, payload, "payload must round-trip as pure data");
+    }
+
+    #[test]
+    fn reads_take_rendered_text_not_stylesheet_contents() {
+        // Measured 2026-08-21: a read of a real console's main region returned
+        // '@keyframes pulse-dot {' — textContent includes <style> and <script>
+        // element contents, so a stylesheet was being handed back as page data.
+        for kind in [ReadKind::Text, ReadKind::TextAll] {
+            let r = Read {
+                name: "t".into(),
+                locator: Locator::Selector("main".into()),
+                kind,
+            };
+            let js = emit_read(&r).unwrap();
+            assert!(js.contains("innerText"), "must prefer rendered text: {js}");
+        }
+        let table = Read {
+            name: "t".into(),
+            locator: Locator::Selector("table".into()),
+            kind: ReadKind::Table,
+        };
+        assert!(emit_read(&table).unwrap().contains("innerText"), "cells too");
+    }
+
+    #[test]
+    fn a_read_is_bounded_and_says_when_it_truncated() {
+        // Measured 2026-08-21: a real console's log pane held 249,751 characters.
+        // Returning that whole is most of an agent's context spent on one tool
+        // result — and cutting it silently is worse, because a truncated log
+        // reads exactly like a short one.
+        let r = Read {
+            name: "log".into(),
+            locator: Locator::Selector("#log".into()),
+            kind: ReadKind::Text,
+        };
+        let js = emit_read_bounded(&r, 100).unwrap();
+        assert!(js.contains("truncated:true"), "must report truncation: {js}");
+        assert!(js.contains("totalLen"), "must report the original size");
+        assert!(js.contains("const LIM = 100"), "must use the given limit");
+    }
+
+    #[test]
+    fn the_default_limit_is_far_below_a_real_log_pane() {
+        assert!(DEFAULT_READ_LIMIT < 249_751, "the measured log pane must not fit");
+        assert!(DEFAULT_READ_LIMIT >= 10_000, "but a normal table must");
     }
 
     #[test]
