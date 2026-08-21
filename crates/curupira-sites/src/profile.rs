@@ -227,14 +227,42 @@ impl Page {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ConsoleProfile {
+    /// Stable identifier for this console. Namespaces every tool this profile
+    /// generates, because the MCP tool registry is a single flat map in which a
+    /// duplicate name silently overwrites rather than erroring — so two profiles
+    /// that both call a page `cluster` must not both emit `cluster_pods`.
+    pub id: String,
+
     /// Origin of the console, e.g. `https://platform.example.invalid`.
     pub base_url: String,
+
+    /// Substrings that identify this console in a tab's URL. This is what makes
+    /// curupira *context-aware*: the active tab's URL is matched against every
+    /// loaded profile's patterns to decide which one is live.
+    ///
+    /// Substring rather than glob or regex, deliberately. A host match is the
+    /// only thing that needs to be true, the URLs are operator-authored, and a
+    /// regex here would be a silent foot-gun — an unanchored pattern matching
+    /// the wrong console is the kind of error that only shows up as an action
+    /// driven against the wrong host.
+    ///
+    /// Empty means the profile matches nothing and is loadable but never
+    /// auto-selected — useful for a draft the mapper produced and nobody has
+    /// reviewed yet.
+    #[serde(default, rename = "match")]
+    pub match_urls: Vec<String>,
+
     pub pages: Vec<Page>,
 }
 
 impl Default for ConsoleProfile {
     fn default() -> Self {
-        Self { base_url: "https://platform.example.invalid".to_string(), pages: Vec::new() }
+        Self {
+            id: "example".to_string(),
+            base_url: "https://platform.example.invalid".to_string(),
+            match_urls: Vec::new(),
+            pages: Vec::new(),
+        }
     }
 }
 
@@ -260,6 +288,20 @@ impl ConsoleProfile {
     /// wins depends on vector order — a silent, order-dependent wrong answer
     /// rather than a failure.
     pub fn validate(&self) -> Result<()> {
+        if self.id.trim().is_empty() {
+            return Err(SitesError::Config(
+                "profile has no 'id' — it namespaces every generated tool, and without it two \
+                 profiles sharing a page name would silently overwrite each other's tools"
+                    .to_string(),
+            ));
+        }
+        if !self.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(SitesError::Config(format!(
+                "profile id '{}' must be ASCII alphanumeric, '-' or '_' — it becomes part of an \
+                 MCP tool name",
+                self.id
+            )));
+        }
         dup_check("page", self.pages.iter().map(|p| p.name.as_str()))?;
         for p in &self.pages {
             dup_check(&format!("read on page '{}'", p.name), p.reads.iter().map(|r| r.name.as_str()))?;
@@ -269,6 +311,17 @@ impl ConsoleProfile {
             )?;
         }
         Ok(())
+    }
+
+    /// Whether this profile claims the given tab URL.
+    ///
+    /// A profile with no patterns matches nothing — never everything. Treating
+    /// "unspecified" as "matches all" would make an unreviewed draft profile
+    /// silently claim every tab, which is the wrong direction to fail on
+    /// borrowed ground.
+    #[must_use]
+    pub fn matches_url(&self, url: &str) -> bool {
+        self.match_urls.iter().any(|m| !m.is_empty() && url.contains(m.as_str()))
     }
 
     /// Every mutating action in the profile, as `page.action`.

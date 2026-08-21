@@ -11,11 +11,16 @@ authors.workspace = true
 name = "curupira_sites"
 path = "src/lib.rs"
 
+[[bin]]
+name = "curupira-sites"
+path = "src/main.rs"
+
 # Dependencies deliberately minimal. The CDP transport (chromiumoxide, tokio,
 # futures, ureq, rustls, ring) did NOT migrate: curupira's TypeScript side owns
 # the browser connection, so carrying a second client would be ~120 crates of
 # duplication, including ring's C/asm build. Everything here is sync.
 [dependencies]
+clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

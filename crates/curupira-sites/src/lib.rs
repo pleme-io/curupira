@@ -28,7 +28,9 @@ pub mod emit;
 pub mod error;
 pub mod profile;
 pub mod terminal;
+pub mod toolgen;
 
 pub use error::{Result, SitesError};
 pub use profile::{Authorization, ConsoleProfile, Effect};
 pub use terminal::{CmdOut, DRIVER_JS, TerminalConfig};
+pub use toolgen::{Bundle, SiteBundle, ToolSpec};
