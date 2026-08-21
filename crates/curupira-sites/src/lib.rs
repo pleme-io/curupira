@@ -26,6 +26,7 @@
 
 pub mod emit;
 pub mod error;
+pub mod mapper;
 pub mod profile;
 pub mod terminal;
 pub mod toolgen;
