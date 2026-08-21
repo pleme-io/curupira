@@ -24,6 +24,24 @@ use crate::error::Result;
 /// in any process here.
 pub const DRIVER_JS: &str = include_str!("../driver.js");
 
+/// The session supervisor payload, compiled in alongside [`DRIVER_JS`].
+///
+/// [`DRIVER_JS`] gives one connection and a per-call retry; this keeps a session
+/// alive in the BACKGROUND so the caller's main stream of actions is just send
+/// and read, with no connect-or-retry ceremony in every command.
+///
+/// It heartbeats against the idle close, re-clicks Connect on every drop with
+/// backoff, and reports counters rather than a boolean — "it reconnected 40
+/// times this hour" is a finding about the backend that a boolean would hide.
+///
+/// It also fixes a trap measured 2026-08-21: hooking `window.WebSocket` captures
+/// only sockets created AFTER injection, so if the operator had already clicked
+/// Connect by hand, `connect()` waited for a banner that had already arrived and
+/// timed out while the session was perfectly usable. The supervisor forces a
+/// fresh socket through its own hook rather than trying to adopt one it cannot
+/// reference.
+pub const SUPERVISOR_JS: &str = include_str!("../supervisor.js");
+
 /// A terminal command's structured result.
 ///
 /// A non-zero `exit` is a **value**, not an error — the caller decides whether
@@ -150,6 +168,33 @@ mod tests {
     fn driver_payload_is_compiled_in_and_self_installing() {
         assert!(DRIVER_JS.contains("DRIVER_VERSION"), "payload must carry its version");
         assert!(!DRIVER_JS.is_empty());
+    }
+
+    #[test]
+    fn the_supervisor_reads_the_same_config_global_as_the_driver() {
+        // Same class-check as the driver: two files in another language, bound
+        // to one constant, or the site config silently never arrives.
+        assert!(SUPERVISOR_JS.contains(CONFIG_GLOBAL), "supervisor must read {CONFIG_GLOBAL}");
+        assert!(!SUPERVISOR_JS.contains("__ROJI"), "pre-migration global");
+    }
+
+    #[test]
+    fn the_supervisor_only_clicks_the_connection_controls() {
+        // It supervises a session; it must never type a command or drive a
+        // control on borrowed ground. The only clicks it may make are the
+        // terminal's own Connect/Disconnect.
+        let clicks = SUPERVISOR_JS.matches(".click()").count();
+        assert_eq!(clicks, 2, "exactly two clicks: Connect and Disconnect");
+        assert!(SUPERVISOR_JS.contains("Disconnect"));
+        assert!(!SUPERVISOR_JS.contains("type:'input'"), "must not send commands");
+        assert!(!SUPERVISOR_JS.contains("\"type\":\"input\""), "must not send commands");
+    }
+
+    #[test]
+    fn the_supervisor_reports_counters_not_a_boolean() {
+        for field in ["connects", "drops", "heartbeats", "lastCloseCode"] {
+            assert!(SUPERVISOR_JS.contains(field), "status must carry {field}");
+        }
     }
 
     #[test]
