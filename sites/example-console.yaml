@@ -1,0 +1,43 @@
+# A generic example profile. It points at example.invalid — the reserved-invalid
+# domain — so it can never reach a real console, and exists to document the
+# format rather than to drive anything.
+#
+# A real profile for a third-party console belongs in ~/.config/curupira/sites/,
+# never in this public repository: its routes and menu structure describe
+# someone else's system.
+id: example-console
+base_url: https://platform.example.invalid
+
+# What makes curupira context-aware. The active tab's URL is matched against
+# these substrings to decide which profile is live. Empty means "never
+# auto-selected" — an unreviewed draft must not claim every tab.
+match:
+  - platform.example.invalid
+
+pages:
+  - name: cluster
+    route: /clusters/{cluster_id}
+    tab: Terminal
+    # A console is a single-page app: the URL changes before the content does,
+    # so name something only true once the page's own data has rendered.
+    ready:
+      - !url-contains "/clusters/"
+      - !selector-present ".xterm"
+    reads:
+      - name: heading
+        locator: !selector "h1"
+        kind: !text
+      - name: pods
+        locator: !selector "table.pods"
+        kind: !table
+    actions:
+      - name: refresh
+        locator: !button-text "Refresh"
+        effect: observe
+      - name: delete-cluster
+        locator: !button-text "Delete"
+        # Mutating controls require an explicit operator grant naming this one
+        # action. There is no "unknown" effect: the author decides, and the
+        # decision is visible here.
+        effect: mutate
+        describes: permanently destroys the cluster
