@@ -253,6 +253,17 @@ pub struct ConsoleProfile {
     pub match_urls: Vec<String>,
 
     pub pages: Vec<Page>,
+
+    /// Settings for a console that embeds a terminal, if it has one.
+    ///
+    /// `None` means "this console has no terminal", which is different from
+    /// "it has one with default settings" — and the distinction is load-bearing.
+    /// The defaults resolve `connect` on socket-open rather than on a readiness
+    /// banner, which is exactly the half-open-socket-reads-as-ready failure
+    /// [`crate::terminal::CONFIG_GLOBAL`] documents. A console that really has a
+    /// terminal should say so and name its banner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<crate::terminal::TerminalConfig>,
 }
 
 impl Default for ConsoleProfile {
@@ -262,6 +273,7 @@ impl Default for ConsoleProfile {
             base_url: "https://platform.example.invalid".to_string(),
             match_urls: Vec::new(),
             pages: Vec::new(),
+            terminal: None,
         }
     }
 }
@@ -504,6 +516,32 @@ pages:
 "#,
         )
         .expect("fixture profile parses")
+    }
+
+    #[test]
+    fn a_console_without_a_terminal_says_so_rather_than_defaulting() {
+        // None != "has one with defaults". The defaults resolve connect on
+        // socket-open instead of on a readiness banner, so silently defaulting
+        // would hand a half-open socket to a caller as "ready".
+        let p = ConsoleProfile::default();
+        assert!(p.terminal.is_none());
+    }
+
+    #[test]
+    fn a_terminal_block_round_trips_through_yaml() {
+        let y = r#"
+id: withterm
+base_url: https://platform.example.invalid
+terminal:
+  ready_banner_match: "Example Terminal"
+  connect_button_match: "Connect"
+  heartbeat_ms: 8000
+pages: []
+"#;
+        let p = ConsoleProfile::from_yaml(y).unwrap();
+        let t = p.terminal.expect("terminal block parses");
+        assert_eq!(t.ready_banner_match, "Example Terminal");
+        assert_eq!(t.heartbeat_ms, 8000);
     }
 
     #[test]
