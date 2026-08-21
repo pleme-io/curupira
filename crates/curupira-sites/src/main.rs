@@ -61,6 +61,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let profiles = load_all(&dirs)?;
             let b = Bundle::compile(&profiles)?;
             let tools: usize = b.sites.iter().map(|s| s.tools.len()).sum();
+
+            // Lints are a GATE here and a warning in `build`. A linted profile
+            // loads and runs — it just quietly does the wrong thing — so the
+            // place to stop it is the check a human or CI runs deliberately,
+            // not the compile step someone runs to get unblocked.
+            let mut linted = 0usize;
+            for pr in &profiles {
+                for l in pr.lints() {
+                    eprintln!("lint [{}]: {l}", pr.id);
+                    linted += 1;
+                }
+            }
+            if linted > 0 {
+                return Err(format!("{linted} lint(s) — see above").into());
+            }
             println!("ok: {} site(s), {} tool(s)", b.sites.len(), tools);
             Ok(())
         }
@@ -86,7 +101,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Cmd::Build { dirs, out, pretty } => {
-            let b = Bundle::compile(&load_all(&dirs)?)?;
+            let profiles = load_all(&dirs)?;
+            for pr in &profiles {
+                for l in pr.lints() {
+                    eprintln!("warning [{}]: {l}", pr.id);
+                }
+            }
+            let b = Bundle::compile(&profiles)?;
             let json = if pretty {
                 serde_json::to_string_pretty(&b)?
             } else {

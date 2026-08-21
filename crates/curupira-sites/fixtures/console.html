@@ -1,0 +1,53 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Fixture Console</title>
+<!--
+  A deliberately awkward stand-in for a real admin console, used to develop and
+  verify the site-plugin engine without touching anyone's real system.
+
+  It reproduces the shapes that actually break naive automation:
+    - hash routing, so the URL changes BEFORE the content does
+    - a real <table> AND an ARIA grid built from divs
+    - content that renders on a delay (ready signals must be real)
+    - a control identified only by its visible text
+    - a destructive control that must never be clicked without a grant
+    - a paginated list, and an empty state that is a FINDING not an error
+-->
+<style>body{font-family:system-ui;margin:2rem}nav a{margin-right:1rem}</style>
+<nav>
+  <a href="#/clusters">Clusters</a>
+  <a href="#/clusters/69">Cluster 69</a>
+  <a href="#/events">Events</a>
+  <a href="#/empty">Empty</a>
+</nav>
+<h1 id="title">loading…</h1>
+<div id="view"></div>
+<script>
+const VIEWS = {
+  '#/clusters': () => `<h1 id="title">Clusters</h1>
+    <table class="rows"><tr><th>Name</th><th>Status</th></tr>
+    <tr><td>alpha</td><td>Ready</td></tr><tr><td>beta</td><td>Degraded</td></tr></table>`,
+  '#/clusters/69': () => `<h1 id="title">Cluster 69</h1>
+    <div role="grid" id="pods">
+      <div role="row"><div role="columnheader">Pod</div><div role="columnheader">Phase</div></div>
+      <div role="row"><div role="cell">api-0</div><div role="cell">Running</div></div>
+      <div role="row"><div role="cell">api-1</div><div role="cell">Pending</div></div>
+    </div>
+    <button>Refresh</button>
+    <button>Delete Cluster</button>
+    <span data-testid="region">us-east-2</span>`,
+  '#/events': () => `<h1 id="title">Events</h1><ul id="ev"><li>started</li><li>scaled</li></ul>`,
+  '#/empty': () => `<h1 id="title">Empty</h1><table class="rows"></table>`,
+};
+function render() {
+  const v = VIEWS[location.hash] || (() => `<h1 id="title">Fixture Console</h1>`);
+  // Deliberate delay: the hash (and therefore the URL) changes immediately, but
+  // the content does not. A profile whose only ready signal is url-contains
+  // will read the PREVIOUS page's DOM. That is the bug this fixture exists to
+  // make reproducible.
+  document.getElementById('view').innerHTML = '';
+  document.getElementById('title').textContent = 'loading…';
+  setTimeout(() => { document.getElementById('view').innerHTML = v(); }, 400);
+}
+addEventListener('hashchange', render); render();
+</script>

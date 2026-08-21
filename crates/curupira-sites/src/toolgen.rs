@@ -96,6 +96,13 @@ pub struct Bundle {
 /// Current bundle schema version.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// How long a generated `goto` waits for its page to become ready.
+/// Generous on purpose: a console behind a slow backend is normal, and the
+/// waiter reports WHICH signal never held, so a long wait still ends in a
+/// diagnosis rather than a bare timeout.
+pub const READY_TIMEOUT_MS: u64 = 15_000;
+pub const READY_POLL_MS: u64 = 150;
+
 impl Bundle {
     /// Compile a set of profiles.
     pub fn compile(profiles: &[ConsoleProfile]) -> Result<Self> {
@@ -168,7 +175,7 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
                 kind: ToolKind::Read,
                 page: page.name.clone(),
                 json_schema: no_args_schema(),
-                js: emit::emit_read(r)?,
+                js: emit::emit_read_checked(r)?,
                 url_template: None,
                 tab: None,
                 effect: None,
@@ -215,7 +222,9 @@ fn goto_tool(profile: &ConsoleProfile, page: &Page) -> Result<ToolSpec> {
         kind: ToolKind::Goto,
         page: page.name.clone(),
         json_schema: params_schema(&params),
-        js: emit::emit_ready_probe(&page.ready)?,
+        // A waiter, not a probe. Round F1 measured why: a probe nobody acts
+        // on let reads run against the previous page's DOM.
+        js: emit::emit_ready_wait(&page.ready, READY_TIMEOUT_MS, READY_POLL_MS)?,
         url_template: Some(join_url(&profile.base_url, &page.route)),
         tab: page.tab.clone(),
         effect: None,

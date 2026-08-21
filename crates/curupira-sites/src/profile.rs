@@ -325,6 +325,48 @@ impl ConsoleProfile {
         Ok(())
     }
 
+    /// Authoring problems that are not hard errors but are almost always bugs.
+    ///
+    /// Kept separate from [`Self::validate`] on purpose: these describe a
+    /// profile that will *load and run* and then quietly do the wrong thing,
+    /// which is a different failure from one that cannot be represented.
+    ///
+    /// The rule that earned this, measured in fixture Round F2 (2026-08-21): a
+    /// page whose only ready signals are URL-based, but which declares reads.
+    /// A `url-contains` signal is true the instant the address bar changes —
+    /// **before any content exists** — so on a single-page console the waiter
+    /// returns `ready` in 0ms and the reads run against the previous page's
+    /// DOM. Measured exactly that: `ready:true, waitedMs:0` while the heading
+    /// still said "loading…" and both data reads came back `absent`.
+    ///
+    /// A URL signal is therefore never sufficient ALONE for a page that reads
+    /// data; it needs at least one DOM-based signal that is only true once the
+    /// page's own content has rendered.
+    #[must_use]
+    pub fn lints(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for p in &self.pages {
+            if p.reads.is_empty() {
+                continue;
+            }
+            let has_dom_signal = p
+                .ready
+                .iter()
+                .any(|s| !matches!(s, ReadySignal::UrlContains(_)));
+            if !has_dom_signal {
+                out.push(format!(
+                    "page '{}' declares {} read(s) but has no DOM-based ready signal{} — a \
+                     url-contains signal is true before any content renders, so reads will run \
+                     against the previous page. Add a selector-present or text-present signal.",
+                    p.name,
+                    p.reads.len(),
+                    if p.ready.is_empty() { " at all" } else { " (only url-contains)" }
+                ));
+            }
+        }
+        out
+    }
+
     /// Whether this profile claims the given tab URL.
     ///
     /// A profile with no patterns matches nothing — never everything. Treating
@@ -516,6 +558,63 @@ pages:
 "#,
         )
         .expect("fixture profile parses")
+    }
+
+    #[test]
+    fn url_only_ready_signals_on_a_reading_page_are_linted() {
+        // Measured in fixture Round F2: waiter returned ready in 0ms while the
+        // page still said "loading…" and every data read came back absent.
+        let p = ConsoleProfile::from_yaml(
+            r##"
+id: l
+base_url: https://x.example.invalid
+pages:
+  - name: p
+    route: /p
+    ready:
+      - !url-contains "/p"
+    reads:
+      - name: r
+        locator: !selector "#r"
+        kind: !text
+"##,
+        )
+        .unwrap();
+        let l = p.lints();
+        assert_eq!(l.len(), 1, "{l:?}");
+        assert!(l[0].contains("no DOM-based ready signal"), "{}", l[0]);
+    }
+
+    #[test]
+    fn a_dom_ready_signal_clears_the_lint() {
+        let p = ConsoleProfile::from_yaml(
+            r##"
+id: l
+base_url: https://x.example.invalid
+pages:
+  - name: p
+    route: /p
+    ready:
+      - !url-contains "/p"
+      - !selector-present "#r"
+    reads:
+      - name: r
+        locator: !selector "#r"
+        kind: !text
+"##,
+        )
+        .unwrap();
+        assert!(p.lints().is_empty());
+    }
+
+    #[test]
+    fn a_page_with_no_reads_is_not_linted() {
+        // Nothing to read means nothing to read too early.
+        let p = ConsoleProfile::from_yaml(
+            "id: l\nbase_url: https://x.example.invalid\npages:\n  - name: p\n    route: /p\n",
+        )
+        .unwrap();
+        assert!(p.lints().is_empty());
     }
 
     #[test]

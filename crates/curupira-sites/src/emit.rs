@@ -100,6 +100,75 @@ pub fn emit_read(read: &Read) -> Result<String> {
     })
 }
 
+/// JS that WAITS for the ready signals, rather than merely testing them once.
+///
+/// Round F1, 2026-08-21, found the gap this closes: `emit_ready_probe` returns a
+/// boolean, and nothing in the engine obliged a caller to act on it. Driving a
+/// hash-routed console whose content renders 400ms after the URL changes, the
+/// probe correctly answered `false` — and the reads ran anyway, returning the
+/// PREVIOUS page's DOM. A correct signal that nobody waits on is not a guard.
+///
+/// Resolves to `{ready, waitedMs, unmet}`. `unmet` names the signals still false
+/// at timeout, because "the page never became ready" is useless without knowing
+/// WHICH condition never held — that is the difference between a stale selector
+/// and a genuinely slow backend.
+pub fn emit_ready_wait(signals: &[ReadySignal], timeout_ms: u64, poll_ms: u64) -> Result<String> {
+    let mut checks = Vec::with_capacity(signals.len());
+    for s in signals {
+        let (label, expr) = match s {
+            ReadySignal::UrlContains(u) => {
+                (format!("url-contains {u}"), format!("location.href.includes({})", js(u)?))
+            }
+            ReadySignal::SelectorPresent(sel) => {
+                (format!("selector-present {sel}"), format!("!!document.querySelector({})", js(sel)?))
+            }
+            ReadySignal::TextPresent(t) => (
+                format!("text-present {t}"),
+                format!("(document.body ? document.body.innerText.includes({}) : false)", js(t)?),
+            ),
+        };
+        checks.push(format!("{{label:{}, ok:() => {expr}}}", js(&label)?));
+    }
+    Ok(format!(
+        "(async () => {{ const C=[{}]; const t0=Date.now(); \
+         while (Date.now()-t0 < {timeout_ms}) {{ \
+           const unmet=C.filter(c=>{{try{{return !c.ok()}}catch(e){{return true}}}}); \
+           if (!unmet.length) return {{ready:true, waitedMs:Date.now()-t0, unmet:[]}}; \
+           await new Promise(r=>setTimeout(r,{poll_ms})); }} \
+         return {{ready:false, waitedMs:Date.now()-t0, \
+           unmet:C.filter(c=>{{try{{return !c.ok()}}catch(e){{return true}}}}).map(c=>c.label)}}; }})()",
+        checks.join(",")
+    ))
+}
+
+/// A read that says WHICH of three things happened instead of returning a bare
+/// value.
+///
+/// Round F1 exposed the ambiguity: a read returned `null`, and `null` covered
+/// three different worlds — the page had not rendered, the element does not
+/// exist on this page, and the element exists but holds nothing. Those need
+/// different responses (wait, fix the profile, accept the result), and a caller
+/// cannot tell them apart from the value alone.
+///
+/// Resolves to `{status, value}` where status is `absent` (the locator matched
+/// nothing), `empty` (matched, but no content — a FINDING, not an error), or
+/// `found`.
+pub fn emit_read_checked(read: &Read) -> Result<String> {
+    let inner = emit_read(read)?;
+    let present = match &read.kind {
+        // Count is never "absent": zero IS the answer.
+        ReadKind::Count => "true".to_string(),
+        ReadKind::TextAll => format!("({}).length > 0", emit_locate_all(&read.locator)?),
+        _ => format!("!!{}", emit_locate(&read.locator)?),
+    };
+    Ok(format!(
+        "(() => {{ const present = {present}; const v = {inner}; \
+         if (!present) return {{status:'absent', value:null}}; \
+         const empty = v === null || v === '' || (Array.isArray(v) && v.length === 0); \
+         return {{status: empty ? 'empty' : 'found', value: v}}; }})()"
+    ))
+}
+
 /// JS expression that clicks the located element and resolves to whether it was
 /// found. Returning the boolean rather than throwing lets the caller report
 /// "control not present" distinctly from "click failed", which on a console that
