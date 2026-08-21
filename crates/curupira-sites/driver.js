@@ -17,7 +17,8 @@
 // a reachability proof, not assumed. When proven, the same Rust verbs keep; only
 // the transport swaps and this emission is dropped.
 //
-// SITE-SPECIFIC BITS ARE INJECTED, NOT BAKED. roji sets `window.__ROJI.driver`
+// SITE-SPECIFIC BITS ARE INJECTED, NOT BAKED. The host sets
+// `window.__CURUPIRA_SITES.driver`
 // before installing this payload: `readyBanner` (a regex the first frames must
 // match before connect resolves — omit to resolve as soon as the socket opens),
 // `connectButton` (a regex matched case-insensitively against button text) and
@@ -33,7 +34,7 @@
   const DRIVER_VERSION = '0.1.0';
   if (window.WT && window.WT.version === DRIVER_VERSION) return 'WT already ' + DRIVER_VERSION;
 
-  const CFG = (window.__ROJI && window.__ROJI.driver) || {};
+  const CFG = (window.__CURUPIRA_SITES && window.__CURUPIRA_SITES.driver) || {};
   const READY = CFG.readyBanner ? new RegExp(CFG.readyBanner) : null;
   const CONNECT_BTN = new RegExp(CFG.connectButton || 'Connect', 'i');
   const HEARTBEAT_MS = CFG.heartbeatMs || 8000;

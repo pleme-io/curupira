@@ -66,6 +66,24 @@ impl Default for TerminalConfig {
     }
 }
 
+/// The single global the prelude writes and [`DRIVER_JS`] reads.
+///
+/// It is a named constant because the two halves live in different LANGUAGES
+/// and nothing else binds them. Measured 2026-08-21: the migration renamed the
+/// Rust side to `__CURUPIRA_SITES` while `driver.js` kept reading `__ROJI`, and
+/// **every test still passed** — because each side was internally consistent.
+///
+/// The failure that would have caused is worth stating, since it is silent in
+/// exactly the wrong direction: with the config never arriving, the payload
+/// falls back to its defaults, so `connect` resolves on socket-open instead of
+/// on the site's readiness banner. A half-open socket then reads as ready, and
+/// the heartbeat that defeats the backend's ~13s idle close reverts to a value
+/// nobody chose. Nothing errors; the terminal just behaves subtly wrong.
+///
+/// `prelude_and_payload_agree_on_the_config_global` now asserts both sides
+/// against this constant, so the *class* is caught rather than this instance.
+pub const CONFIG_GLOBAL: &str = "__CURUPIRA_SITES";
+
 /// Render the prelude that parameterizes the payload for one site.
 ///
 /// Every value goes through `serde_json::to_string` rather than being
@@ -74,7 +92,7 @@ impl Default for TerminalConfig {
 /// quotes or backslashes.
 pub fn emit_config_prelude(cfg: &TerminalConfig) -> Result<String> {
     Ok(format!(
-        "window.__CURUPIRA_SITES = {{ driver: {{ readyBanner: {}, connectButton: {}, heartbeatMs: {} }} }};",
+        "window.{CONFIG_GLOBAL} = {{ driver: {{ readyBanner: {}, connectButton: {}, heartbeatMs: {} }} }};",
         serde_json::to_string(&cfg.ready_banner_match)?,
         serde_json::to_string(&cfg.connect_button_match)?,
         cfg.heartbeat_ms,
@@ -132,6 +150,34 @@ mod tests {
     fn driver_payload_is_compiled_in_and_self_installing() {
         assert!(DRIVER_JS.contains("DRIVER_VERSION"), "payload must carry its version");
         assert!(!DRIVER_JS.is_empty());
+    }
+
+    #[test]
+    fn prelude_and_payload_agree_on_the_config_global() {
+        // The regression this pins, found 2026-08-21 by recon rather than by a
+        // test: the Rust side wrote `window.__CURUPIRA_SITES` while driver.js
+        // still read `window.__ROJI`. Both files were internally consistent, so
+        // nothing failed — the config simply never arrived and the payload used
+        // its defaults, which reads as "connected" on a half-open socket.
+        //
+        // Asserting BOTH sides against one constant is what makes this a class
+        // check rather than a spot fix: renaming the global in either language
+        // alone now fails here.
+        let prelude = emit_config_prelude(&TerminalConfig::default()).unwrap();
+        assert!(
+            prelude.contains(CONFIG_GLOBAL),
+            "the prelude must write the shared global, got: {prelude}"
+        );
+        assert!(
+            DRIVER_JS.contains(CONFIG_GLOBAL),
+            "driver.js must READ the same global the prelude writes ({CONFIG_GLOBAL}) — \
+             a mismatch is silent: the payload falls back to defaults and a half-open \
+             socket reads as ready"
+        );
+        assert!(
+            !DRIVER_JS.contains("__ROJI"),
+            "driver.js still references the pre-migration global"
+        );
     }
 
     #[test]
