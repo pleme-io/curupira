@@ -37,6 +37,23 @@ enum Cmd {
     },
     /// Print the terminal driver payload verbatim.
     EmitDriver,
+    /// Structure raw terminal output into JSON. Reads the output on stdin.
+    ///
+    /// The JSON API over the terminal: a command and its bytes go in, a typed
+    /// record comes out, and the record says which shaper produced it.
+    Shape {
+        /// The command that produced the output — shapers claim on the COMMAND,
+        /// because output-sniffing guesses.
+        #[arg(long)]
+        cmd: String,
+        #[arg(long)]
+        pretty: bool,
+    },
+    /// Rewrite a command to ask for machine-readable output where one exists.
+    Prefer {
+        #[arg(required = true)]
+        cmd: Vec<String>,
+    },
     /// Print the session-supervisor payload — keeps a terminal session alive in
     /// the background so callers can just send commands.
     EmitSupervisor,
@@ -94,6 +111,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().cmd {
         Cmd::EmitDriver => {
             print!("{DRIVER_JS}");
+            Ok(())
+        }
+        Cmd::Shape { cmd, pretty } => {
+            let mut raw = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut raw)?;
+            let shaped = curupira_sites::structure(&cmd, &raw);
+            println!("{}", if pretty {
+                serde_json::to_string_pretty(&shaped)?
+            } else {
+                serde_json::to_string(&shaped)?
+            });
+            Ok(())
+        }
+        Cmd::Prefer { cmd } => {
+            println!("{}", curupira_sites::prefer_structured(&cmd.join(" ")));
             Ok(())
         }
         Cmd::EmitSupervisor => {
