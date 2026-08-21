@@ -41,6 +41,12 @@ pub fn emit_locate(loc: &Locator) -> Result<String> {
              .startsWith({}.replace(/\\s+/g,' ').trim().toLowerCase())) || null)",
             js(t)?
         ),
+        Locator::ButtonTextContains(t) => format!(
+            "(Array.from(document.querySelectorAll('button,[role=\"button\"],a')) \
+             .find(e => (e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase() \
+             .includes({}.replace(/\\s+/g,' ').trim().toLowerCase())) || null)",
+            js(t)?
+        ),
     })
 }
 
@@ -57,6 +63,12 @@ pub fn emit_locate_all(loc: &Locator) -> Result<String> {
             "Array.from(document.querySelectorAll('button,[role=\"button\"],a')) \
              .filter(e => (e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase() \
              .startsWith({}.replace(/\\s+/g,' ').trim().toLowerCase()))",
+            js(t)?
+        ),
+        Locator::ButtonTextContains(t) => format!(
+            "Array.from(document.querySelectorAll('button,[role=\"button\"],a')) \
+             .filter(e => (e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase() \
+             .includes({}.replace(/\\s+/g,' ').trim().toLowerCase()))",
             js(t)?
         ),
     })
