@@ -50,6 +50,8 @@ pub enum Structured {
     Pairs { pairs: Vec<(String, String)> },
     /// A single number, e.g. `| wc -l`.
     Count { count: i64 },
+    /// Log lines with their levels, plus a count per level.
+    Logs { levels: std::collections::BTreeMap<String, usize>, lines: Vec<LogLine> },
     /// Lines, when there is genuinely nothing more to say.
     Unstructured { lines: Vec<String> },
 }
@@ -194,12 +196,160 @@ impl Shaper for KubectlTableShaper {
     }
 }
 
+/// One parsed log line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LogLine {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub level: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    pub message: String,
+}
+
+/// `kubectl logs`, and anything else whose output is log lines.
+///
+/// Logs are the largest unstructured surface a console has, and the one most
+/// often read by eye. Giving them fields turns "grep for error" into a filter.
+///
+/// Deliberately conservative about LEVEL: it is only reported when the line
+/// actually carries one as a token. Inferring a level from the presence of the
+/// word "error" anywhere would label a line that says "no errors found" as an
+/// error, which is worse than leaving the field absent.
+pub struct LogShaper;
+
+impl LogShaper {
+    /// Levels recognised as a standalone token, longest-first so WARNING is not
+    /// matched as WARN.
+    const LEVELS: [&'static str; 10] =
+        ["CRITICAL", "WARNING", "TRACE", "DEBUG", "ERROR", "FATAL", "PANIC", "INFO", "WARN", "ERR"];
+
+    fn parse_line(line: &str) -> LogLine {
+        // Strip ANSI first: a coloured level token is still a level.
+        let clean = strip_ansi(line);
+        let t = clean.trim();
+
+        // A JSON log line is already structured — keep its own fields rather
+        // than re-deriving them from a rendering of itself.
+        if t.starts_with('{') {
+            if let Ok(serde_json::Value::Object(m)) = serde_json::from_str::<serde_json::Value>(t) {
+                let get = |keys: &[&str]| -> Option<String> {
+                    keys.iter().find_map(|k| m.get(*k)).and_then(|v| {
+                        v.as_str().map(str::to_string).or_else(|| Some(v.to_string()))
+                    })
+                };
+                return LogLine {
+                    ts: get(&["ts", "time", "timestamp", "@timestamp"]),
+                    level: get(&["level", "lvl", "severity"]).map(|l| l.to_ascii_uppercase()),
+                    target: get(&["logger", "target", "component", "caller"]),
+                    message: get(&["msg", "message"]).unwrap_or_else(|| t.to_string()),
+                };
+            }
+        }
+
+        let mut toks = t.split_whitespace().peekable();
+        let mut ts = None;
+        // A leading RFC3339-ish stamp: starts with a 4-digit year and carries a
+        // date separator.
+        if let Some(first) = toks.peek() {
+            let f = *first;
+            if f.len() >= 10 && f.as_bytes()[..4].iter().all(u8::is_ascii_digit) && f.contains('-') {
+                ts = Some(f.to_string());
+                toks.next();
+            }
+        }
+        let mut level = None;
+        if let Some(next) = toks.peek() {
+            let up = next.trim_matches(|c: char| !c.is_ascii_alphabetic()).to_ascii_uppercase();
+            if Self::LEVELS.contains(&up.as_str()) {
+                level = Some(up);
+                toks.next();
+            }
+        }
+        let mut target = None;
+        if let Some(next) = toks.peek() {
+            // `module::path:` or `component:` immediately after the level.
+            if next.ends_with(':') && next.len() > 1 && !next.contains(' ') {
+                target = Some(next.trim_end_matches(':').to_string());
+                toks.next();
+            }
+        }
+        let rest: Vec<&str> = toks.collect();
+        let message = if rest.is_empty() { t.to_string() } else { rest.join(" ") };
+        LogLine { ts, level, target, message }
+    }
+}
+
+impl Shaper for LogShaper {
+    fn name(&self) -> &'static str { "logs" }
+    fn claims(&self, cmd: &str) -> bool {
+        let c = cmd.to_ascii_lowercase();
+        c.contains("kubectl") && c.contains(" logs")
+    }
+    fn shape(&self, raw: &str) -> Option<Structured> {
+        let lines: Vec<LogLine> = raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(Self::parse_line)
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        // The counts are the point: "0 errors in 200 lines" is an answer, and
+        // computing it here means every caller does not.
+        let mut levels: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        for l in &lines {
+            if let Some(lv) = &l.level {
+                *levels.entry(lv.clone()).or_default() += 1;
+            }
+        }
+        Some(Structured::Logs { levels, lines })
+    }
+}
+
+/// Remove ANSI escapes. Terminal output is coloured, and a coloured token is
+/// still a token.
+#[must_use]
+pub fn strip_ansi(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == 0x1b {
+            // CSI … final byte in @-~, or OSC … BEL
+            let mut j = i + 1;
+            if j < b.len() && b[j] == b'[' {
+                j += 1;
+                while j < b.len() && !(0x40..=0x7e).contains(&b[j]) {
+                    j += 1;
+                }
+                i = j + 1;
+                continue;
+            }
+            if j < b.len() && b[j] == b']' {
+                while j < b.len() && b[j] != 0x07 {
+                    j += 1;
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        // Safe because we only skip whole escape sequences, never split a char.
+        let ch_len = s[i..].chars().next().map_or(1, char::len_utf8);
+        out.push_str(&s[i..i + ch_len]);
+        i += ch_len;
+    }
+    out
+}
+
 /// Every shaper, in claim order. Order is the priority: the most specific claim
 /// must come first, or a broader shaper swallows it.
 #[must_use]
 pub fn shapers() -> Vec<Box<dyn Shaper>> {
     vec![
         Box::new(CountShaper),
+        Box::new(LogShaper),
         Box::new(JsonShaper),
         Box::new(YamlShaper),
         Box::new(PairsShaper),
@@ -252,6 +402,71 @@ pub fn prefer_structured(cmd: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn logs_get_fields_and_a_level_census() {
+        let raw = "2026-08-21T22:26:18.726147Z  WARN sui_cache::server: signing DISABLED\n\
+                   2026-08-21T22:27:00.000000Z  INFO server: started\n\
+                   2026-08-21T22:27:01.000000Z ERROR db: connection refused\n";
+        let s = structure("kubectl -n x logs deploy/y --tail=50", raw);
+        assert_eq!(s.shaper, "logs");
+        match s.structured {
+            Structured::Logs { levels, lines } => {
+                assert_eq!(lines.len(), 3);
+                assert_eq!(levels.get("WARN"), Some(&1));
+                assert_eq!(levels.get("ERROR"), Some(&1));
+                assert_eq!(lines[0].target.as_deref(), Some("sui_cache::server"));
+                assert!(lines[0].ts.is_some());
+                assert_eq!(lines[2].message, "connection refused");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_level_is_only_reported_when_the_line_carries_one() {
+        // The failure this prevents: labelling "no errors found" as an ERROR
+        // because the word appears somewhere in the text.
+        let s = structure("kubectl logs x", "no errors found\n");
+        match s.structured {
+            Structured::Logs { levels, lines } => {
+                assert!(levels.is_empty(), "{levels:?}");
+                assert!(lines[0].level.is_none());
+                assert_eq!(lines[0].message, "no errors found");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_json_log_line_keeps_its_own_fields() {
+        // Re-deriving fields from a rendering of a structured record is strictly
+        // worse than reading the record.
+        let s = structure("kubectl logs x", r#"{"level":"error","msg":"boom","ts":"2026-01-01T00:00:00Z","logger":"api"}"#);
+        match s.structured {
+            Structured::Logs { lines, .. } => {
+                assert_eq!(lines[0].level.as_deref(), Some("ERROR"));
+                assert_eq!(lines[0].message, "boom");
+                assert_eq!(lines[0].target.as_deref(), Some("api"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn coloured_levels_still_parse() {
+        let s = structure("kubectl logs x", "2026-08-21T22:26:18Z \u{1b}[33m WARN\u{1b}[0m mod: hi\n");
+        match s.structured {
+            Structured::Logs { levels, .. } => assert_eq!(levels.get("WARN"), Some(&1)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_ansi_leaves_text_intact() {
+        assert_eq!(strip_ansi("\u{1b}[32mgreen\u{1b}[0m text"), "green text");
+        assert_eq!(strip_ansi("plain"), "plain");
+    }
 
     #[test]
     fn a_count_is_a_number_not_a_line() {
