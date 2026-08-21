@@ -350,14 +350,10 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             .controls
             .iter()
             .map(|c| Action {
-                name: slugish(stable_label(&c.text)),
-                locator: match stable_label(&c.text) {
-                    // A label carrying a live count is matched on its stable
-                    // prefix, or the profile breaks the next time the number
-                    // moves — silently, as "control not found".
-                    stable if stable != c.text => Locator::ButtonTextPrefix(stable.to_string()),
-                    _ => Locator::ButtonText(c.text.clone()),
-                },
+                // Both kinds of noise come off the NAME: a trailing live count and a
+                // leading decoration. 'Pods · 179' -> pods, '>_Terminal' -> terminal.
+                name: slugish(core_label(stable_label(&c.text))),
+                locator: choose_locator(&c.text),
                 effect: Effect::Mutate,
                 describes: format!(
                     "UNREVIEWED — discovered by the mapper, never driven. Classified mutate \
@@ -454,6 +450,45 @@ fn route_of(url: &str, base_url: &str) -> String {
     url.strip_prefix(base_url).map_or_else(|| url.to_string(), |r| {
         if r.starts_with('/') { r.to_string() } else { format!("/{r}") }
     })
+}
+
+/// Pick the weakest matcher that will actually find a control.
+///
+/// The ladder, strongest first, each rung earned by a real label measured on a
+/// console 2026-08-21:
+///
+/// - `ButtonText` — the label is stable. Preferred: an exact match cannot hit
+///   the wrong control.
+/// - `ButtonTextPrefix` — trailing noise, e.g. `Pods · 179`, where the count
+///   moves and the noun does not.
+/// - `ButtonTextContains` — LEADING decoration, e.g. `>_Terminal`, where both of
+///   the above find nothing and the tab reads as absent rather than as
+///   differently-labelled.
+///
+/// Weakest-that-works rather than always-contains, because a substring can match
+/// more than one control and on borrowed ground driving the wrong one has no
+/// undo.
+fn choose_locator(text: &str) -> Locator {
+    let stable = stable_label(text);
+    if stable != text {
+        return Locator::ButtonTextPrefix(stable.to_string());
+    }
+    let core = core_label(text);
+    if core != text && !core.is_empty() {
+        return Locator::ButtonTextContains(core.to_string());
+    }
+    Locator::ButtonText(text.to_string())
+}
+
+/// Strip LEADING non-alphanumeric decoration from a label.
+///
+/// `>_Terminal` -> `Terminal`. Only leading; a label that is decorative all the
+/// way through is left alone rather than reduced to something that would match
+/// half the page.
+fn core_label(text: &str) -> &str {
+    let t = text.trim();
+    let cut = t.find(|c: char| c.is_alphanumeric()).unwrap_or(0);
+    if cut == 0 { t } else { &t[cut..] }
 }
 
 /// Strip a trailing live count from a control label.
@@ -591,6 +626,23 @@ mod tests {
         let names: Vec<&str> = p.pages[0].actions.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["view", "view-2", "view-3"], "{names:?}");
         p.validate().expect("a draft must survive its own validator");
+    }
+
+    #[test]
+    fn the_matcher_ladder_picks_the_weakest_rung_that_works() {
+        // Each case is a real label measured on a console 2026-08-21.
+        assert_eq!(choose_locator("Refresh"), Locator::ButtonText("Refresh".into()));
+        assert_eq!(choose_locator("Pods \u{b7} 179"), Locator::ButtonTextPrefix("Pods".into()));
+        assert_eq!(choose_locator(">_Terminal"), Locator::ButtonTextContains("Terminal".into()));
+    }
+
+    #[test]
+    fn leading_decoration_is_stripped_only_from_the_front() {
+        assert_eq!(core_label(">_Terminal"), "Terminal");
+        assert_eq!(core_label("Refresh"), "Refresh");
+        // All-decoration is left alone rather than reduced to something that
+        // would match half the page.
+        assert_eq!(core_label(">>>"), ">>>");
     }
 
     #[test]

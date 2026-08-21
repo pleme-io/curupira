@@ -119,6 +119,20 @@ pub enum Locator {
     /// automation clicks something nobody intended, and on borrowed ground that
     /// is the failure mode with no undo.
     ButtonTextPrefix(String),
+    /// Case-insensitive match against any part of a button's text.
+    ///
+    /// The mirror of [`Locator::ButtonTextPrefix`], and it exists because noise
+    /// appears on both ends. Prefix handles a trailing live count
+    /// (`Pods · 179`); this handles a LEADING decoration. Measured on a real
+    /// console 2026-08-21: the terminal tab is labelled `>_Terminal`, so both an
+    /// exact match and a prefix match on "Terminal" find nothing, and the tab
+    /// reads as absent rather than as differently-labelled.
+    ///
+    /// Weakest of the three, so prefer the others: a substring can match more
+    /// than one control, and on borrowed ground the cost of driving the wrong
+    /// one has no undo. Use it when the stable part of a label is genuinely in
+    /// the middle.
+    ButtonTextContains(String),
 }
 
 /// What a named read extracts from the page.
