@@ -37,6 +37,9 @@ enum Cmd {
     },
     /// Print the terminal driver payload verbatim.
     EmitDriver,
+    /// Print the session-supervisor payload — keeps a terminal session alive in
+    /// the background so callers can just send commands.
+    EmitSupervisor,
     /// Print the read-only survey JS to evaluate in a page.
     EmitSurvey {
         /// Milliseconds of DOM quiet before surveying.
@@ -91,6 +94,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().cmd {
         Cmd::EmitDriver => {
             print!("{DRIVER_JS}");
+            Ok(())
+        }
+        Cmd::EmitSupervisor => {
+            print!("{}", curupira_sites::terminal::SUPERVISOR_JS);
             Ok(())
         }
         Cmd::EmitSurvey { quiet_ms, timeout_ms } => {
