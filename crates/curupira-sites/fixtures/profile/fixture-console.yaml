@@ -25,3 +25,21 @@ pages:
       - name: region
         locator: !selector "[data-testid=\"region\"]"
         kind: !text
+
+  # F7: the empty state. A console that renders a table with zero rows is not
+  # broken and not absent — it is a FINDING. This page exists to prove the three
+  # statuses are actually distinguishable in a browser, not just in a unit test.
+  - name: empty
+    route: /console.html#/empty
+    ready:
+      - !selector-present "table.rows"
+    reads:
+      - name: rows
+        locator: !selector "table.rows"
+        kind: !table
+      - name: missing
+        locator: !selector "#does-not-exist"
+        kind: !text
+      - name: how-many
+        locator: !selector "table.rows tr"
+        kind: !count

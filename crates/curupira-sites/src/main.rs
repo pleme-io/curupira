@@ -37,6 +37,23 @@ enum Cmd {
     },
     /// Print the terminal driver payload verbatim.
     EmitDriver,
+    /// Print the read-only survey JS to evaluate in a page.
+    EmitSurvey {
+        /// Milliseconds of DOM quiet before surveying.
+        #[arg(long, default_value_t = 300)]
+        quiet_ms: u64,
+        /// Give up waiting for quiet after this long and survey anyway,
+        /// reporting settled:false.
+        #[arg(long, default_value_t = 6000)]
+        timeout_ms: u64,
+    },
+    /// Fold survey JSON (an array, on stdin) into a DRAFT profile.
+    Draft {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        base_url: String,
+    },
     /// List what a bundle would expose, for review.
     List {
         #[arg(required = true)]
@@ -55,6 +72,40 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match Cli::parse().cmd {
         Cmd::EmitDriver => {
             print!("{DRIVER_JS}");
+            Ok(())
+        }
+        Cmd::EmitSurvey { quiet_ms, timeout_ms } => {
+            print!("{}", curupira_sites::mapper::emit_survey_when_settled(quiet_ms, timeout_ms));
+            Ok(())
+        }
+        Cmd::Draft { id, base_url } => {
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)?;
+            let surveys: Vec<curupira_sites::mapper::PageSurvey> = serde_json::from_str(&buf)?;
+
+            // Surveys taken while the page was still moving are called out
+            // rather than folded in silently — an incomplete map that looks
+            // complete is how a profile ends up missing half a console.
+            let unsettled: Vec<&str> = surveys
+                .iter()
+                .filter(|s| !s.settled)
+                .map(|s| s.url.as_str())
+                .collect();
+            if !unsettled.is_empty() {
+                eprintln!(
+                    "warning: {} survey(s) never went quiet, so this draft may be incomplete: {}",
+                    unsettled.len(),
+                    unsettled.join(", ")
+                );
+            }
+
+            let draft = curupira_sites::mapper::draft_profile(&id, &base_url, &surveys)?;
+            println!("{}", serde_yaml::to_string(&draft)?);
+            eprintln!(
+                "drafted {} page(s); every control is `mutate` until you classify it, and `match` \
+                 is empty so this profile claims no tab yet",
+                draft.pages.len()
+            );
             Ok(())
         }
         Cmd::Check { dirs } => {

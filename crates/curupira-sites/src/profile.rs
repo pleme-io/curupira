@@ -106,6 +106,19 @@ pub enum Locator {
     Selector(String),
     /// Case-insensitive match against a button's trimmed text content.
     ButtonText(String),
+    /// Case-insensitive match against the START of a button's text.
+    ///
+    /// Consoles put live data in control labels. Measured on a real console
+    /// 2026-08-21: 11 of 89 controls were labelled `Pods · 179`,
+    /// `Deployments · 75`, `ConfigMaps · 188` and so on — an exact text match
+    /// on any of them breaks the moment the count changes, and breaks
+    /// *silently*, as "control not found".
+    ///
+    /// The stable part is the prefix, so this matches on it. Deliberately not a
+    /// regex: an unanchored pattern that matches the wrong control is how an
+    /// automation clicks something nobody intended, and on borrowed ground that
+    /// is the failure mode with no undo.
+    ButtonTextPrefix(String),
 }
 
 /// What a named read extracts from the page.
