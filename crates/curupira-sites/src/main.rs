@@ -47,6 +47,14 @@ enum Cmd {
         #[arg(long, default_value_t = 6000)]
         timeout_ms: u64,
     },
+    /// Render a SKILL.md for each profile in DIRS.
+    Skill {
+        #[arg(required = true)]
+        dirs: Vec<PathBuf>,
+        /// Write `<out>/site-<id>/SKILL.md` instead of printing.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Fold survey JSON (an array, on stdin) into a DRAFT profile.
     Draft {
         #[arg(long)]
@@ -122,6 +130,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                  is empty so this profile claims no tab yet",
                 draft.pages.len()
             );
+            Ok(())
+        }
+        Cmd::Skill { dirs, out } => {
+            for pr in &load_all(&dirs)? {
+                let md = curupira_sites::skill::render(pr)?;
+                match &out {
+                    None => println!("{md}"),
+                    Some(dir) => {
+                        let d = dir.join(format!("site-{}", pr.id));
+                        std::fs::create_dir_all(&d)?;
+                        std::fs::write(d.join("SKILL.md"), &md)?;
+                        eprintln!("wrote {}/SKILL.md", d.display());
+                    }
+                }
+            }
             Ok(())
         }
         Cmd::Check { dirs } => {
