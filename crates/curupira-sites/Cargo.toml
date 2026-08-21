@@ -1,0 +1,30 @@
+[package]
+name = "curupira-sites"
+version = "0.1.0"
+description = "Compile web-console profiles into MCP tool definitions and the JavaScript that drives them — the typed core of curupira's site plugins"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "curupira_sites"
+path = "src/lib.rs"
+
+# Dependencies deliberately minimal. The CDP transport (chromiumoxide, tokio,
+# futures, ureq, rustls, ring) did NOT migrate: curupira's TypeScript side owns
+# the browser connection, so carrying a second client would be ~120 crates of
+# duplication, including ring's C/asm build. Everything here is sync.
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+thiserror.workspace = true
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"

@@ -1,0 +1,32 @@
+# Rust workspace root.
+#
+# curupira is primarily a TypeScript MCP server; this workspace holds the typed
+# core that compiles console profiles into MCP tools and the JavaScript they
+# evaluate. It is an AUTHOR-TIME compiler — the server loads its generated
+# bundle and spawns nothing, so there is no Rust dependency at runtime.
+#
+# [profile.*] must live at the workspace ROOT: cargo ignores a profile section
+# in a non-root member and only warns, so keeping it in the crate would silently
+# drop these settings.
+[workspace]
+resolver = "3"
+members = ["crates/curupira-sites"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.89.0"
+license = "MIT"
+authors = ["pleme-io"]
+
+[workspace.dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+thiserror = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = "z"
+strip = true
