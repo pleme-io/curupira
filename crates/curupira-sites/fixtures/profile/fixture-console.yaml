@@ -1,0 +1,27 @@
+# Profile for fixtures/console.html — the engine's own test console.
+# Public and generic by construction: it describes a file:// fixture in this
+# repo, not anyone's real system.
+id: fixture
+base_url: file:///Users/luis.d/code/github/pleme-io/curupira/crates/curupira-sites/fixtures
+match:
+  - /fixtures/console.html
+pages:
+  - name: cluster
+    route: /console.html#/clusters/69
+    # ROUND F1 used only the url-contains signal and the reads ran against the
+    # previous page (ready:true in 0ms, heading still "loading…"). Round F3'''s
+    # lint now refuses that shape. The selector below is the real gate: it is
+    # only true once THIS page'''s content has rendered.
+    ready:
+      - !url-contains "#/clusters/69"
+      - !selector-present "#pods"
+    reads:
+      - name: title
+        locator: !selector "#title"
+        kind: !text
+      - name: pods
+        locator: !selector "#pods"
+        kind: !table
+      - name: region
+        locator: !selector "[data-testid=\"region\"]"
+        kind: !text
