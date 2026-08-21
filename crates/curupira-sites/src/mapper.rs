@@ -50,6 +50,20 @@ pub struct FoundTable {
     pub headers: Vec<String>,
 }
 
+/// A list the mapper saw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundList {
+    pub selector: String,
+    pub items: usize,
+}
+
+/// A heading the mapper saw.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FoundHeading {
+    pub selector: String,
+    pub text: String,
+}
+
 /// What one page yielded.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageSurvey {
@@ -62,6 +76,12 @@ pub struct PageSurvey {
     pub controls: Vec<FoundControl>,
     #[serde(default)]
     pub tables: Vec<FoundTable>,
+    /// Lists — as much console content lives in `<ul>`/ARIA lists as in tables.
+    #[serde(default)]
+    pub lists: Vec<FoundList>,
+    /// Headings: the cheapest "did the right page render" read there is.
+    #[serde(default)]
+    pub headings: Vec<FoundHeading>,
     /// Elements carrying a stable-looking test id — the best selectors a console
     /// offers, and worth surfacing separately because they are what a reviewer
     /// should prefer.
@@ -118,10 +138,20 @@ pub fn emit_survey() -> String {
     });
   const testIds = Array.from(document.querySelectorAll('[data-testid]'))
     .map(e => e.getAttribute('data-testid'));
+  // Lists are content too. A console renders as much in <ul>/<ol> and ARIA
+  // lists as it does in tables, and a mapper that only knows tables reports a
+  // page as having nothing to read when it is full of readable data.
+  const lists = Array.from(document.querySelectorAll('ul,ol,[role="list"]'))
+    .map(l => ({ selector: sel(l), items: l.querySelectorAll('li,[role="listitem"]').length }))
+    .filter(l => l.items > 0);
+  // Headings identify a page and are the cheapest "did the right thing render"
+  // read available.
+  const headings = Array.from(document.querySelectorAll('h1,h2'))
+    .map(h => ({ selector: sel(h), text: txt(h) })).filter(h => h.text);
   return {
     url: location.href, title: document.title,
     routes: [...new Set(routes)], controls,
-    tables, test_ids: [...new Set(testIds)]
+    tables, lists, headings, test_ids: [...new Set(testIds)]
   };
 })()"#
         .to_string()
@@ -176,9 +206,13 @@ pub fn emit_survey_when_settled(quiet_ms: u64, timeout_ms: u64) -> String {
 /// - every discovered control is `Effect::Mutate`, so nothing it found can be
 ///   driven without an explicit grant.
 pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result<ConsoleProfile> {
+    let mut names: Vec<String> =
+        surveys.iter().enumerate().map(|(i, s)| page_name(s, base_url, i)).collect();
+    uniquify(&mut names);
+
     let mut pages = Vec::with_capacity(surveys.len());
     for (i, s) in surveys.iter().enumerate() {
-        let name = page_name(s, i);
+        let name = names[i].clone();
         let route = route_of(&s.url, base_url);
 
         let mut reads = Vec::new();
@@ -187,6 +221,20 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
                 name: if s.tables.len() == 1 { "rows".to_string() } else { format!("rows_{n}") },
                 locator: Locator::Selector(t.selector.clone()),
                 kind: ReadKind::Table,
+            });
+        }
+        for (n, l) in s.lists.iter().enumerate() {
+            reads.push(Read {
+                name: if s.lists.len() == 1 { "items".to_string() } else { format!("items_{n}") },
+                locator: Locator::Selector(format!("{} li, {} [role=\"listitem\"]", l.selector, l.selector)),
+                kind: ReadKind::TextAll,
+            });
+        }
+        if let Some(h) = s.headings.first() {
+            reads.push(Read {
+                name: "heading".to_string(),
+                locator: Locator::Selector(h.selector.clone()),
+                kind: ReadKind::Text,
             });
         }
         for t in &s.test_ids {
@@ -201,8 +249,14 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             .controls
             .iter()
             .map(|c| Action {
-                name: slugish(&c.text),
-                locator: Locator::ButtonText(c.text.clone()),
+                name: slugish(stable_label(&c.text)),
+                locator: match stable_label(&c.text) {
+                    // A label carrying a live count is matched on its stable
+                    // prefix, or the profile breaks the next time the number
+                    // moves — silently, as "control not found".
+                    stable if stable != c.text => Locator::ButtonTextPrefix(stable.to_string()),
+                    _ => Locator::ButtonText(c.text.clone()),
+                },
                 effect: Effect::Mutate,
                 describes: format!(
                     "UNREVIEWED — discovered by the mapper, never driven. Classified mutate \
@@ -216,10 +270,17 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
         // A ready signal the mapper can actually justify: the first table it saw
         // is content that only exists once the page rendered. Without one, the
         // lint would (correctly) refuse the draft the moment it has reads.
+        // Prefer whatever content this page actually HAS as its ready signal:
+        // a table, else a list, else a heading. Round F8 drafted an /events page
+        // with no reads and no signal purely because it renders a <ul> rather
+        // than a <table> — the page was fine, the mapper was narrow.
         let ready = s
             .tables
             .first()
-            .map(|t| vec![ReadySignal::SelectorPresent(t.selector.clone())])
+            .map(|t| t.selector.clone())
+            .or_else(|| s.lists.first().map(|l| l.selector.clone()))
+            .or_else(|| s.headings.first().map(|h| h.selector.clone()))
+            .map(|sel| vec![ReadySignal::SelectorPresent(sel)])
             .unwrap_or_default();
 
         pages.push(Page { name, route, tab: None, ready, reads, actions });
@@ -234,15 +295,65 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
     })
 }
 
-fn page_name(s: &PageSurvey, i: usize) -> String {
+/// Name a drafted page from its ROUTE, not its title.
+///
+/// Round F8 (2026-08-21) measured why: naming from `document.title` drafted four
+/// pages all called `fixture-console`, because a single-page console keeps one
+/// title across every route. `ConsoleProfile::validate` refused the whole draft
+/// as duplicate pages — correctly, but it means a title-named mapper produces
+/// unusable drafts for most SPAs, which is most consoles.
+///
+/// The route is the part that actually differs, so it names the page; the title
+/// is only a fallback for a route that slugs to nothing (a bare `/`).
+fn page_name(s: &PageSurvey, base_url: &str, i: usize) -> String {
+    let r = slugish(&route_of(&s.url, base_url));
+    if !r.is_empty() {
+        return r;
+    }
     let t = slugish(&s.title);
-    if t.is_empty() { format!("page_{i}") } else { t }
+    if t.is_empty() { format!("page-{i}") } else { t }
+}
+
+/// Make every name unique by suffixing repeats.
+///
+/// Two routes CAN slug to the same name (`/a/b` and `/a-b`). Rather than let
+/// `validate` reject the whole draft — which throws away a good survey over a
+/// naming collision the mapper can simply resolve — disambiguate here.
+fn uniquify(names: &mut [String]) {
+    let mut seen: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for n in names.iter_mut() {
+        let c = seen.entry(n.clone()).or_insert(0);
+        *c += 1;
+        if *c > 1 {
+            *n = format!("{n}-{c}");
+        }
+    }
 }
 
 fn route_of(url: &str, base_url: &str) -> String {
     url.strip_prefix(base_url).map_or_else(|| url.to_string(), |r| {
         if r.starts_with('/') { r.to_string() } else { format!("/{r}") }
     })
+}
+
+/// Strip a trailing live count from a control label.
+///
+/// Measured on a real console 2026-08-21: `Pods · 179`, `Deployments · 75`,
+/// `Services · 128`. The count moves; the noun does not. Conservative on
+/// purpose — it only strips a trailing separator-plus-digits, so a control
+/// legitimately named `Region 2` keeps its name unless a separator precedes the
+/// number.
+fn stable_label(s: &str) -> &str {
+    let t = s.trim_end();
+    let Some(cut) = t.rfind(|c: char| c == '\u{b7}' || c == '|' || c == '-' || c == ':') else {
+        return s;
+    };
+    let tail = t[cut + t[cut..].chars().next().map_or(1, char::len_utf8)..].trim();
+    if !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '.') {
+        t[..cut].trim_end()
+    } else {
+        s
+    }
 }
 
 fn slugish(s: &str) -> String {
@@ -278,7 +389,11 @@ mod tests {
                 rows: 3,
                 headers: vec!["Pod".into(), "Phase".into()],
             }],
+            lists: vec![],
+            headings: vec![FoundHeading { selector: "#title".into(), text: "Cluster 69".into() }],
             test_ids: vec!["region".into()],
+            settled: true,
+            waited_ms: 400,
         }
     }
 
@@ -316,6 +431,30 @@ mod tests {
     }
 
     #[test]
+    fn a_label_carrying_a_live_count_is_matched_on_its_stable_prefix() {
+        // Measured on a real console 2026-08-21: 11 of 89 control labels were
+        // "Pods · 179"-shaped. An exact text match breaks the moment the count
+        // moves, and breaks silently as "control not found".
+        assert_eq!(stable_label("Pods · 179"), "Pods");
+        assert_eq!(stable_label("Deployments · 75"), "Deployments");
+        assert_eq!(stable_label("Services · 1,284"), "Services");
+        // Conservative: a number that is part of the name survives.
+        assert_eq!(stable_label("Region 2"), "Region 2");
+        assert_eq!(stable_label("Refresh"), "Refresh");
+        assert_eq!(stable_label("Cluster - prod"), "Cluster - prod");
+    }
+
+    #[test]
+    fn a_volatile_label_drafts_a_prefix_locator_and_a_stable_name() {
+        let mut sv = survey();
+        sv.controls = vec![FoundControl { text: "Pods · 179".into(), kind: "button".into() }];
+        let p = draft_profile("d", "https://c.example.invalid", &[sv]).unwrap();
+        let a = &p.pages[0].actions[0];
+        assert_eq!(a.name, "pods", "the name must not carry the count");
+        assert_eq!(a.locator, Locator::ButtonTextPrefix("Pods".into()));
+    }
+
+    #[test]
     fn a_draft_claims_no_tab() {
         let p = draft_profile("d", "https://c.example.invalid", &[survey()]).unwrap();
         assert!(p.match_urls.is_empty());
@@ -335,6 +474,35 @@ mod tests {
         let names: Vec<&str> = p.pages[0].reads.iter().map(|r| r.name.as_str()).collect();
         assert!(names.contains(&"rows"), "{names:?}");
         assert!(names.contains(&"region"), "{names:?}");
+    }
+
+    #[test]
+    fn pages_are_named_from_the_route_not_the_shared_title() {
+        // Round F8: a single-page console keeps ONE document.title across every
+        // route, so title-naming collided all four pages and validate() refused
+        // the entire draft.
+        let mut a = survey();
+        let mut b = survey();
+        a.url = "https://c.example.invalid/clusters".into();
+        b.url = "https://c.example.invalid/clusters/69".into();
+        a.title = "Console".into();
+        b.title = "Console".into();
+        let p = draft_profile("d", "https://c.example.invalid", &[a, b]).unwrap();
+        let names: Vec<&str> = p.pages.iter().map(|x| x.name.as_str()).collect();
+        assert_eq!(names, vec!["clusters", "clusters-69"], "{names:?}");
+        p.validate().expect("a multi-page draft must survive its own validator");
+    }
+
+    #[test]
+    fn colliding_slugs_are_disambiguated_rather_than_rejected() {
+        let mut a = survey();
+        let mut b = survey();
+        a.url = "https://c.example.invalid/a/b".into();
+        b.url = "https://c.example.invalid/a-b".into();
+        let p = draft_profile("d", "https://c.example.invalid", &[a, b]).unwrap();
+        assert_eq!(p.pages[0].name, "a-b");
+        assert_eq!(p.pages[1].name, "a-b-2");
+        p.validate().unwrap();
     }
 
     #[test]

@@ -35,6 +35,12 @@ pub fn emit_locate(loc: &Locator) -> Result<String> {
              .find(e => (e.textContent||'').trim().toLowerCase() === {}.toLowerCase()) || null)",
             js(t)?
         ),
+        Locator::ButtonTextPrefix(t) => format!(
+            "(Array.from(document.querySelectorAll('button,[role=\"button\"],a')) \
+             .find(e => (e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase() \
+             .startsWith({}.replace(/\\s+/g,' ').trim().toLowerCase())) || null)",
+            js(t)?
+        ),
     })
 }
 
@@ -45,6 +51,12 @@ pub fn emit_locate_all(loc: &Locator) -> Result<String> {
         Locator::ButtonText(t) => format!(
             "Array.from(document.querySelectorAll('button,[role=\"button\"],a')) \
              .filter(e => (e.textContent||'').trim().toLowerCase() === {}.toLowerCase())",
+            js(t)?
+        ),
+        Locator::ButtonTextPrefix(t) => format!(
+            "Array.from(document.querySelectorAll('button,[role=\"button\"],a')) \
+             .filter(e => (e.textContent||'').replace(/\\s+/g,' ').trim().toLowerCase() \
+             .startsWith({}.replace(/\\s+/g,' ').trim().toLowerCase()))",
             js(t)?
         ),
     })
@@ -283,6 +295,15 @@ mod tests {
         let c = emit_click(&Locator::ButtonText("Delete".into())).unwrap();
         assert!(c.contains("if (!e) return false"), "{c}");
         assert!(c.contains("e.click()"));
+    }
+
+    #[test]
+    fn a_prefix_locator_matches_a_label_whose_count_moved() {
+        let js = emit_locate(&Locator::ButtonTextPrefix("Pods".into())).unwrap();
+        assert!(js.contains("startsWith"), "{js}");
+        // and the needle is still escaped data, same rule as everywhere else
+        let nasty = emit_locate(&Locator::ButtonTextPrefix("a\"); alert(1); //".into())).unwrap();
+        assert!(!nasty.contains("); alert(1); //\"") || nasty.contains("\\\""), "{nasty}");
     }
 
     #[test]
