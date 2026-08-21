@@ -252,14 +252,57 @@ class ChromeLaunchToolProvider extends ChromeIndependentToolProvider {
           context.logger.info({ chromeBinary, chromeArgs, display }, 'Spawning Chrome process');
 
           try {
-            // Kill any existing Chrome dev instances first
-            try {
-              execSync(`pkill -f "chrome.*remote-debugging-port=${args.port}" || true`, {
-                stdio: 'ignore',
-              });
-              await new Promise((resolve) => setTimeout(resolve, 1000));
-            } catch {
-              // Ignore kill errors
+            // ── Do NOT kill a Chrome we did not start ────────────────────────
+            //
+            // This used to unconditionally
+            //   pkill -f "chrome.*remote-debugging-port=<port>"
+            // before spawning. That makes chrome_launch a session DESTROYER: an
+            // already-running browser on that port is very often the one holding
+            // a logged-in profile, and killing it silently discards an SSO
+            // session the caller cannot get back without re-authenticating.
+            //
+            // Measured 2026-08-21: a Chrome on :9222 with a persistent
+            // user-data-dir held the only authenticated session to a third-party
+            // console. `chrome_launch` against that port would have killed it.
+            // Nothing in the call said "destroy what is there" — the caller
+            // asked to launch, and reasonably expects an existing instance to be
+            // reused rather than terminated.
+            //
+            // So: adopt a live instance instead of replacing it, and require an
+            // explicit `replaceExisting` for the destructive path. The refusal
+            // names the running instance rather than guessing what the caller
+            // meant.
+            const existing = await probeExistingChrome(args.port!);
+            if (existing && !args.replaceExisting) {
+              return {
+                success: true,
+                data: {
+                  adopted: true,
+                  port: args.port,
+                  browser: existing,
+                  message:
+                    'A Chrome is already listening on this port; adopted it instead of relaunching. ' +
+                    'Nothing was killed. Pass replaceExisting: true to terminate it and start a fresh one.',
+                  nextActions: [
+                    `chrome_connect({ host: 'localhost', port: ${args.port} })`,
+                  ],
+                },
+              };
+            }
+
+            if (existing && args.replaceExisting) {
+              context.logger.warn(
+                { port: args.port },
+                'replaceExisting: terminating the Chrome already on this port — any session it holds is lost',
+              );
+              try {
+                execSync(`pkill -f "chrome.*remote-debugging-port=${args.port}" || true`, {
+                  stdio: 'ignore',
+                });
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+              } catch {
+                // Ignore kill errors
+              }
             }
 
             // Build environment with DISPLAY
