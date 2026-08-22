@@ -38,17 +38,47 @@
       # committed Cargo.lock and no workspace-release machinery, and
       # substrate.rust.tool produces a whole flake output set that does not
       # compose with the eachDefaultSystem shape this flake already has.
+      # One vendored lock, shared by both Rust packages. The workspace now carries
+      # a git dependency (the generated akeyless-api SDK), which rustPlatform must
+      # be given a hash for; defining it once keeps the two packages in lockstep.
+      commonCargoLock = {
+        lockFile = self + "/Cargo.lock";
+        outputHashes = {
+          "akeyless-api-0.1.1" = "sha256-5dmaCcMnO97hKzIS/qkgIqaCSWcTVTqQjajdZtD9PgI=";
+        };
+      };
+
+      # The profile compiler. Scoped to its OWN crate so it stays pure and fast:
+      # curupira-sites does not depend on akeyless-api, so buildAndTestSubdir keeps
+      # the heavy SDK out of this package's compile even though the lock vendors it.
       curupiraSites = pkgs.rustPlatform.buildRustPackage {
         pname = "curupira-sites";
         version = "0.1.0";
         src = self;
-        cargoLock.lockFile = self + "/Cargo.lock";
+        cargoLock = commonCargoLock;
+        buildAndTestSubdir = "crates/curupira-sites";
         # The crate is pure and its tests need no browser or network, so they run
         # as part of the build rather than being trusted to CI.
         doCheck = true;
         meta = {
           description = "Compile web-console profiles into MCP tool definitions";
           mainProgram = "curupira-sites";
+        };
+      };
+
+      # The runtime akeyless API client: wraps the generated SDK behind the
+      # borrowed-ground gate. This one DOES compile akeyless-api + reqwest + tokio,
+      # so it is a heavier build than curupira-sites and is a separate package.
+      curupiraAkeyless = pkgs.rustPlatform.buildRustPackage {
+        pname = "curupira-akeyless";
+        version = "0.1.0";
+        src = self;
+        cargoLock = commonCargoLock;
+        buildAndTestSubdir = "crates/curupira-akeyless";
+        doCheck = true;
+        meta = {
+          description = "Typed, gated client for the akeyless API (wraps the generated akeyless-api SDK)";
+          mainProgram = "curupira-akeyless";
         };
       };
 
@@ -63,12 +93,14 @@
         default = mcpServer;
         mcp-server = mcpServer;
         curupira-sites = curupiraSites;
+        curupira-akeyless = curupiraAkeyless;
       };
 
       apps = {
         default = { type = "app"; program = "${mcpServer}/bin/curupira-mcp"; };
         mcp = { type = "app"; program = "${mcpServer}/bin/curupira-mcp"; };
         sites = { type = "app"; program = "${curupiraSites}/bin/curupira-sites"; };
+        akeyless = { type = "app"; program = "${curupiraAkeyless}/bin/curupira-akeyless"; };
         "regen:all" = { type = "app"; program = "${regenApp}"; };
       };
 
