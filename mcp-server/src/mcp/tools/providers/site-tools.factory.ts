@@ -281,14 +281,33 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     });
   }
 
-  /** Poll the tab URL until it reflects `route` or the deadline passes. */
+  /**
+   * Wait until the tab has navigated to `route` AND the document has finished
+   * loading, then a short render beat.
+   *
+   * The beat is load-bearing, learned running a suite against a live SPA: the
+   * settle-aware survey can settle on the INITIAL blank document (it is quiet
+   * because the app has not started rendering yet), reporting an empty page as
+   * settled. Waiting for `readyState==='complete'` plus a beat lets the app mount
+   * before the survey looks, so "settled" means "rendered", not "not yet started".
+   */
   private async waitForUrl(route: string, timeoutMs: number): Promise<void> {
+    // Match on the path portion, ignoring a query string, so a route like
+    // `/?auth-type=email` is not compared against a URL that has not gained the
+    // query yet — but a bare `/` (which every URL includes) never short-circuits.
+    const path = route.split('?')[0];
+    const needle = path && path !== '/' ? path : route;
     const t0 = Date.now();
     while (Date.now() - t0 < timeoutMs) {
-      const res = await this.evaluate('window.location.href');
-      if (res.ok && String(res.value ?? '').includes(route)) return;
+      const res = await this.evaluate('[window.location.href, document.readyState].join("||")');
+      if (res.ok) {
+        const [href, state] = String(res.value ?? '').split('||');
+        if (href.includes(needle) && state === 'complete') break;
+      }
       await new Promise((r) => setTimeout(r, 200));
     }
+    // Render beat so the survey sees the mounted app, not the empty shell.
+    await new Promise((r) => setTimeout(r, 1200));
   }
 
   private async evaluate(expression: string): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
