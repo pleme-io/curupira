@@ -41,3 +41,19 @@ pages:
         # decision is visible here.
         effect: mutate
         describes: permanently destroys the cluster
+
+# The site's qualifying suite — declarative assertions the MCP server runs
+# per-site on demand, and curupira-e2e runs against fixtures. A test never drives
+# the site: it navigates to a page, surveys, and reads. `outcome` is the read's
+# verdict — found / empty / absent (kotae) — so an expected `found` fails loudly
+# on an `empty` rather than passing on a partial. A REAL site's tests belong in
+# its PRIVATE profile config, never here.
+tests:
+  - name: cluster page renders its core surface
+    page: cluster
+    must_settle: true
+    expect_reads:
+      - read: heading
+        outcome: found
+      - read: pods
+        outcome: found

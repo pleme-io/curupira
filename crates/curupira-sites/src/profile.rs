@@ -250,6 +250,67 @@ impl Page {
     }
 }
 
+/// One qualifying test case for a site: navigate to `page`, then assert the page
+/// matches these expectations. A test never *drives* the site — it surveys and
+/// reads only, the same read-only operations the mapper is limited to, so a suite
+/// is safe to run on borrowed ground.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageTest {
+    /// Human-readable case name, shown in the report.
+    pub name: String,
+    /// The [`Page::name`] to navigate to and assert against.
+    pub page: String,
+    /// Control texts that must ALL be present on the page.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_controls: Vec<String>,
+    /// In-page routes that must ALL appear.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_routes: Vec<String>,
+    /// Named reads and the verdict each must produce.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_reads: Vec<ReadExpect>,
+    /// Whether the page must report `settled`. Off by default: an interstitial is
+    /// static and settles too, so this only means something where the page
+    /// genuinely finishes loading.
+    #[serde(default)]
+    pub must_settle: bool,
+}
+
+/// A named read on the page and the [`Outcome`] it must produce.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadExpect {
+    /// The [`Read::name`] on the page under test.
+    pub read: String,
+    /// The verdict the read must return.
+    pub outcome: Outcome,
+}
+
+/// The three verdicts a checked read can return (kotae): present with a value,
+/// present but empty, or absent — no two the same, so a test expecting `found`
+/// fails loudly on an `empty` rather than passing on a partial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Outcome {
+    /// Present with a non-empty value.
+    Found,
+    /// Present but empty — a finding, not an error.
+    Empty,
+    /// The element is not on the page.
+    Absent,
+}
+
+impl Outcome {
+    /// The `status` string the read emitter reports for this outcome.
+    #[must_use]
+    pub fn as_status(self) -> &'static str {
+        match self {
+            Outcome::Found => "found",
+            Outcome::Empty => "empty",
+            Outcome::Absent => "absent",
+        }
+    }
+}
+
 /// A whole console, as data.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -291,6 +352,14 @@ pub struct ConsoleProfile {
     /// terminal should say so and name its banner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<crate::terminal::TerminalConfig>,
+
+    /// The site's qualifying test suite — declarative assertions run by navigating
+    /// to a page and comparing its survey/reads against expectations. Empty for a
+    /// site with no suite yet. A REAL site's tests live in its private profile
+    /// config; the suite compiles into the bundle so the MCP server can run it
+    /// per-site, and curupira-e2e runs the same declarative plan against fixtures.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<PageTest>,
 }
 
 impl Default for ConsoleProfile {
@@ -301,6 +370,7 @@ impl Default for ConsoleProfile {
             match_urls: Vec::new(),
             pages: Vec::new(),
             terminal: None,
+            tests: Vec::new(),
         }
     }
 }

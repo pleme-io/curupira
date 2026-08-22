@@ -387,6 +387,7 @@ dependencies = [
  "curupira-sites",
  "futures",
  "serde_json",
+ "serde_yaml",
  "tiny_http",
  "tokio",
 ]
