@@ -83,3 +83,4 @@ debug.log
 
 # Rust
 target/
+result
