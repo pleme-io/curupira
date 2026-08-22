@@ -98,6 +98,14 @@ enum Cmd {
         #[arg(required = true)]
         dirs: Vec<PathBuf>,
     },
+
+    /// Show the qualifying test suite each site carries — the cases the MCP server
+    /// runs per-site. Compiles the profiles, so it also fails loudly if a test
+    /// names a page or read that does not exist.
+    Tests {
+        #[arg(required = true)]
+        dirs: Vec<PathBuf>,
+    },
 }
 
 fn main() {
@@ -258,6 +266,35 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("    {}{mark}", t.name);
                 }
             }
+            Ok(())
+        }
+        Cmd::Tests { dirs } => {
+            let b = Bundle::compile(&load_all(&dirs)?)?;
+            let mut total = 0usize;
+            for s in &b.sites {
+                if s.tests.is_empty() {
+                    continue;
+                }
+                println!("{}  ({} case(s))", s.id, s.tests.len());
+                for t in &s.tests {
+                    total += 1;
+                    let mut want = Vec::new();
+                    if !t.expect_controls.is_empty() {
+                        want.push(format!("{} control(s)", t.expect_controls.len()));
+                    }
+                    if !t.expect_routes.is_empty() {
+                        want.push(format!("{} route(s)", t.expect_routes.len()));
+                    }
+                    if !t.read_checks.is_empty() {
+                        want.push(format!("{} read(s)", t.read_checks.len()));
+                    }
+                    if t.must_settle {
+                        want.push("settle".to_string());
+                    }
+                    println!("    {}  @ {}  [{}]", t.name, t.route, want.join(", "));
+                }
+            }
+            println!("{total} case(s) across {} site(s)", b.sites.iter().filter(|s| !s.tests.is_empty()).count());
             Ok(())
         }
         Cmd::Build { dirs, out, pretty } => {

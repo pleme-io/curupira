@@ -82,6 +82,11 @@ pub struct SiteBundle {
     #[serde(rename = "match")]
     pub match_urls: Vec<String>,
     pub tools: Vec<ToolSpec>,
+    /// The site's compiled qualifying suite — carried IN the bundle so the MCP
+    /// server can run it per-site on demand with no reference back to the profile.
+    /// Empty for a site with no suite.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<crate::testplan::CompiledTest>,
 }
 
 /// Every compiled console, as the TS server loads it.
@@ -114,6 +119,7 @@ impl Bundle {
                 base_url: p.base_url.clone(),
                 match_urls: p.match_urls.clone(),
                 tools: generate(p)?,
+                tests: crate::testplan::compile(p)?,
             });
         }
         let b = Self { schema_version: SCHEMA_VERSION, sites };

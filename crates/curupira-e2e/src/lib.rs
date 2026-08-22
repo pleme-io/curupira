@@ -104,3 +104,20 @@ pub async fn eval_json(page: &chromiumoxide::Page, js: &str) -> serde_json::Valu
     let res = page.evaluate(params).await.expect("evaluate");
     res.value().cloned().unwrap_or(serde_json::Value::Null)
 }
+
+// ── Per-site suite: the reference executor ──────────────────────────────────
+
+use curupira_sites::testplan::{CaseResult, CompiledTest, judge_case};
+
+/// Run one compiled test case against a page that is ALREADY at the right route
+/// (a fixture is), gathering the survey + each read result and handing them to
+/// the pure judge. This is the reference executor; the MCP server's TypeScript
+/// executor navigates first, then does exactly this and calls the same judge.
+pub async fn run_case_on_page(page: &chromiumoxide::Page, test: &CompiledTest) -> CaseResult {
+    let survey = eval_json(page, &test.survey_js).await;
+    let mut reads = Vec::with_capacity(test.read_checks.len());
+    for check in &test.read_checks {
+        reads.push(eval_json(page, &check.js).await);
+    }
+    judge_case(test, &survey, &reads)
+}

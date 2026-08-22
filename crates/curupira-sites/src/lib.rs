@@ -31,6 +31,7 @@ pub mod profile;
 pub mod shell;
 pub mod skill;
 pub mod terminal;
+pub mod testplan;
 pub mod toolgen;
 
 pub use error::{Result, SitesError};

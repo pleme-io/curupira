@@ -408,6 +408,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
         match_urls: Vec::new(),
         pages,
         terminal: None,
+            tests: Vec::new(),
     })
 }
 
@@ -551,6 +552,7 @@ pub fn read_only(profile: &ConsoleProfile, id: &str, match_urls: Vec<String>) ->
             .iter()
             .map(|p| Page { actions: Vec::new(), ..p.clone() })
             .collect(),
+            tests: profile.tests.clone(),
     }
 }
 

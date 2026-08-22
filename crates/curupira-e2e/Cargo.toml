@@ -22,3 +22,4 @@ chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-feature
 futures = "0.3"
 serde_json = "1"
 tiny_http = "0.12"
+serde_yaml = "0.9"
