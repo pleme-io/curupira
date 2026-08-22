@@ -10,7 +10,7 @@
 # drop these settings.
 [workspace]
 resolver = "3"
-members = ["crates/curupira-sites"]
+members = ["crates/curupira-sites", "crates/curupira-akeyless"]
 
 [workspace.package]
 edition = "2024"

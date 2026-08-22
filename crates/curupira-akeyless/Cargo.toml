@@ -1,0 +1,37 @@
+# curupira-akeyless — a typed, borrowed-ground-gated client for the akeyless API.
+#
+# Unlike curupira-sites (an author-time compiler with no runtime deps), this is a
+# RUNTIME tool: it holds a live async HTTP client and drives our akeyless tenant's
+# API directly, so the fleet can create identities, list state and exercise
+# endpoints WITHOUT screen-scraping the web console. It wraps the generated
+# `akeyless-api` SDK (604 endpoints, 1334 types) behind the SAME Observe/Mutate
+# gate curupira-sites uses — reused, not re-defined, because borrowed ground is
+# one concept whether the surface is a console button or an API call.
+[package]
+name = "curupira-akeyless"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89.0"
+license = "MIT"
+authors = ["pleme-io"]
+description = "Typed, borrowed-ground-gated client for the akeyless API, wrapping the generated akeyless-api SDK"
+
+[[bin]]
+name = "curupira-akeyless"
+path = "src/main.rs"
+
+[dependencies]
+# The generated SDK is the near-miss primitive we extend, never re-generate.
+# Pinned by rev for reproducibility; Phase 2 swaps this for a flake input so the
+# nix build resolves it hermetically instead of cargo fetching it.
+akeyless-api = { git = "https://github.com/pleme-io/akeyless-api.git", rev = "4f455966ecba8789dd1932cf6a725dff2d7031f1" }
+# The borrowed-ground gate lives in curupira-sites; reuse it, do not duplicate it.
+curupira-sites = { path = "../curupira-sites" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+clap = { workspace = true, features = ["env"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints.clippy]
+pedantic = "warn"
