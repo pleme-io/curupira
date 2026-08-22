@@ -1,0 +1,24 @@
+# curupira-e2e — a browser test suite that EXERCISES and ENFORCES the browser-facing
+# engine: the JS curupira-sites emits (survey / driver / read emitters) is loaded
+# into a real browser against fixture pages and asserted. No 2F/akeyless credentials
+# needed — the fixtures mimic the mapped structures, so the suite catches regressions
+# in the emitters and profiles that unit tests (which never touch a browser) cannot.
+#
+# chromiumoxide (pure-Rust CDP) is the driver, not the unmaintained playwright-rust
+# 0.0.20 binding (which needs a Node driver + browser download at runtime): it drives
+# the operator's Chromium directly over the SAME CDP protocol curupira itself uses.
+[package]
+name = "curupira-e2e"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89.0"
+license = "MIT"
+publish = false
+
+[dependencies]
+curupira-sites = { path = "../curupira-sites" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+chromiumoxide = { version = "0.7", features = ["tokio-runtime"], default-features = false }
+futures = "0.3"
+serde_json = "1"
+tiny_http = "0.12"
