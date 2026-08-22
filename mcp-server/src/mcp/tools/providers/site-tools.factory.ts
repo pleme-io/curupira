@@ -49,16 +49,79 @@ interface ToolSpec {
   describes?: string;
 }
 
+// The compiled qualifying suite the Rust engine bakes into the bundle. The JUDGE
+// (judgeCase below) mirrors curupira-sites' testplan::judge_case exactly — one
+// verdict, two executors (this server, and curupira-e2e in Rust).
+interface CompiledReadCheck {
+  read: string;
+  js: string;
+  expect_status: string;
+}
+interface CompiledTest {
+  name: string;
+  route: string;
+  tab?: string;
+  survey_js: string;
+  expect_controls?: string[];
+  expect_routes?: string[];
+  must_settle?: boolean;
+  read_checks?: CompiledReadCheck[];
+}
+
 interface SiteBundle {
   id: string;
   base_url: string;
   match: string[];
   tools: ToolSpec[];
+  tests?: CompiledTest[];
 }
 
 interface Bundle {
   schema_version: number;
   sites: SiteBundle[];
+}
+
+// ── The judge — a byte-for-byte port of curupira-sites::testplan ─────────────
+// Kept identical to the Rust so a verdict is the same whichever executor ran it.
+
+function judgeSurvey(test: CompiledTest, survey: Record<string, unknown>): string[] {
+  const fails: string[] = [];
+  const controls = Array.isArray(survey.controls)
+    ? (survey.controls as Array<Record<string, unknown>>).map((c) => String(c?.text ?? ''))
+    : [];
+  for (const want of test.expect_controls ?? []) {
+    if (!controls.includes(want)) fails.push(`expected control '${want}' not present`);
+  }
+  const routes = Array.isArray(survey.routes) ? (survey.routes as unknown[]).map(String) : [];
+  for (const want of test.expect_routes ?? []) {
+    if (!routes.some((r) => r.includes(want))) fails.push(`expected route '${want}' not present`);
+  }
+  if (test.must_settle && survey.settled !== true) fails.push('page did not settle');
+  return fails;
+}
+
+function judgeRead(check: CompiledReadCheck, result: Record<string, unknown>): string | null {
+  const got = typeof result.status === 'string' ? result.status : '<no status>';
+  return got === check.expect_status
+    ? null
+    : `read '${check.read}': expected ${check.expect_status}, got ${got}`;
+}
+
+function judgeCase(
+  test: CompiledTest,
+  survey: Record<string, unknown>,
+  readResults: Array<Record<string, unknown>>,
+): { name: string; passed: boolean; failures: string[] } {
+  const failures = judgeSurvey(test, survey);
+  const checks = test.read_checks ?? [];
+  checks.forEach((check, i) => {
+    const f = judgeRead(check, readResults[i] ?? {});
+    if (f) failures.push(f);
+  });
+  if (readResults.length !== checks.length) {
+    failures.push(`executor ran ${readResults.length} read-checks, plan has ${checks.length}`);
+  }
+  return { name: test.name, passed: failures.length === 0, failures };
 }
 
 /** The bundle schema this provider understands. */
@@ -117,6 +180,9 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
       for (const spec of site.tools) {
         this.registerGeneratedTool(site, spec);
       }
+      if (site.tests && site.tests.length > 0) {
+        this.registerTestRunner(site);
+      }
     }
     this.logger.info(
       {
@@ -162,6 +228,69 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
    * returned nothing" — which is the same found/empty/absent discipline the
    * generated reads use inside the page.
    */
+
+  /**
+   * Register `<site>_run_tests` — run the site's compiled qualifying suite against
+   * the live site and report a per-case verdict. Read-only: it navigates,
+   * surveys, and reads, exactly what the mapper is limited to.
+   *
+   * The gathering (navigate + eval) is this server's job; the JUDGING calls the
+   * same logic curupira-sites/testplan uses, ported below, so a verdict here and
+   * in curupira-e2e (Rust) is identical.
+   */
+  private registerTestRunner(site: SiteBundle): void {
+    const noArgs = {
+      parse: (v: unknown) => (v || {}) as Record<string, unknown>,
+      safeParse: (v: unknown) => ({ success: true as const, data: (v || {}) as Record<string, unknown> }),
+    };
+    this.registerTool({
+      name: `${site.id.replace(/[^a-z0-9]+/gi, '_')}_run_tests`,
+      description:
+        `Run the qualifying test suite for the '${site.id}' console: for each case, navigate to the page, ` +
+        `survey it, run its read-checks, and report which expectations held. Read-only. ` +
+        `${(site.tests ?? []).length} case(s) on hand.`,
+      argsSchema: noArgs,
+      jsonSchema: { type: 'object', properties: {}, additionalProperties: false },
+      handler: async () => {
+        const cases: Array<{ name: string; passed: boolean; failures: string[] }> = [];
+        for (const t of site.tests ?? []) {
+          const target = site.base_url.replace(/\/+$/, '') + t.route;
+          await this.evaluate(`location.href = ${JSON.stringify(target)}`);
+          await this.waitForUrl(t.route, 8000);
+          if (t.tab) {
+            const label = JSON.stringify(t.tab);
+            await this.evaluate(
+              `(()=>{const b=[...document.querySelectorAll('button,[role="tab"],a')].find(e=>((e).innerText||'').trim()===${label});if(b)(b).click();})()`,
+            );
+          }
+          const surveyRes = await this.evaluate(t.survey_js);
+          const survey = surveyRes.ok ? (surveyRes.value as Record<string, unknown>) : {};
+          const readResults: Array<Record<string, unknown>> = [];
+          for (const c of t.read_checks ?? []) {
+            const r = await this.evaluate(c.js);
+            readResults.push(r.ok ? (r.value as Record<string, unknown>) : { status: '<eval-error>' });
+          }
+          cases.push(judgeCase(t, survey, readResults));
+        }
+        const passed = cases.filter((c) => c.passed).length;
+        return {
+          success: true,
+          data: { site: site.id, total: cases.length, passed, failed: cases.length - passed, cases },
+        };
+      },
+    });
+  }
+
+  /** Poll the tab URL until it reflects `route` or the deadline passes. */
+  private async waitForUrl(route: string, timeoutMs: number): Promise<void> {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      const res = await this.evaluate('window.location.href');
+      if (res.ok && String(res.value ?? '').includes(route)) return;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+  }
+
   private async evaluate(expression: string): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
     const client = this.chromeService.getCurrentClient();
     if (!client) {
