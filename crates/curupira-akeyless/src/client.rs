@@ -53,6 +53,22 @@ pub struct NewIdentity {
     pub access_key: Option<String>,
 }
 
+/// Turn an SDK error into an [`AkeylessError::Api`] that KEEPS the response body.
+///
+/// The generated SDK's `Display` renders a `ResponseError` as only
+/// `status code 400` and throws the body away — but akeyless puts the actual
+/// reason ("authentication failure...", "access-id not found") in the body. An
+/// error that says only "400" is a kotae violation: it names the status, not
+/// what happened. This keeps the body so a caller can act on the real message.
+fn describe<T>(op: &'static str, e: akeyless_api::apis::Error<T>) -> AkeylessError {
+    use akeyless_api::apis::Error;
+    let detail = match e {
+        Error::ResponseError(r) => format!("status {} — {}", r.status, r.content),
+        other => other.to_string(),
+    };
+    AkeylessError::Api { op, detail }
+}
+
 impl AkeylessClient {
     /// Bind to an akeyless API endpoint, e.g.
     /// `https://api.akeyless.example`.
@@ -87,7 +103,7 @@ impl AkeylessClient {
         body.access_type = Some("access_key".to_string());
         let out = v2_api::auth(&self.config, body)
             .await
-            .map_err(|e| AkeylessError::Api { op: "auth", detail: e.to_string() })?;
+            .map_err(|e| describe("auth", e))?;
         match out.token {
             Some(token) if !token.is_empty() => Ok(Session { token, expiration: out.expiration }),
             _ => Err(AkeylessError::NoToken),
@@ -103,7 +119,7 @@ impl AkeylessClient {
         body.token = Some(session.token.clone());
         v2_api::auth_method_list(&self.config, body)
             .await
-            .map_err(|e| AkeylessError::Api { op: "auth_method_list", detail: e.to_string() })
+            .map_err(|e| describe("auth_method_list", e))
     }
 
     /// **Observe.** List the tenant's items (secrets, keys, targets) by path.
@@ -115,7 +131,7 @@ impl AkeylessClient {
         body.token = Some(session.token.clone());
         v2_api::list_items(&self.config, body)
             .await
-            .map_err(|e| AkeylessError::Api { op: "list_items", detail: e.to_string() })
+            .map_err(|e| describe("list_items", e))
     }
 
     /// **Mutate.** Create an API-key auth method — the autonomous "account".
@@ -137,7 +153,7 @@ impl AkeylessClient {
         body.token = Some(session.token.clone());
         let out = v2_api::auth_method_create_api_key(&self.config, body)
             .await
-            .map_err(|e| AkeylessError::Api { op: "auth_method_create_api_key", detail: e.to_string() })?;
+            .map_err(|e| describe("auth_method_create_api_key", e))?;
         Ok(NewIdentity { name: name.to_string(), access_id: out.access_id, access_key: out.access_key })
     }
 }
