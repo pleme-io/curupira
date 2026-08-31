@@ -69,6 +69,61 @@ fn describe<T>(op: &'static str, e: akeyless_api::apis::Error<T>) -> AkeylessErr
     AkeylessError::Api { op, detail }
 }
 
+/// How to authenticate — one variant per akeyless `access_type` we support.
+///
+/// This is an enum rather than a struct of options so the illegal combinations
+/// have no representation: you cannot hand akeyless an access-key AND an
+/// admin-password, nor omit both, because neither state can be constructed.
+/// Adding a further `access_type` (certificate, universal id) is a new variant
+/// plus one `match` arm — the compiler names every site that must handle it.
+///
+/// `Debug` is deliberately NOT derived: both variants carry a secret, and a
+/// derived `Debug` is how a credential reaches a log by reflex.
+pub enum Credential {
+    /// `access_type: "access_key"` — a `p-*` access id plus its access key.
+    /// The programmatic identity an API key produces.
+    AccessKey {
+        /// The access id. An identifier, not a secret.
+        access_id: String,
+        /// The access key. A secret.
+        access_key: String,
+    },
+    /// `access_type: "password"` — an account email plus password.
+    ///
+    /// The credential shape a deployment issues to a human admin. Some
+    /// deployments issue ONLY this, so without the variant such an endpoint is
+    /// unreachable: `access_key` alone cannot authenticate there. Added for
+    /// exactly that case.
+    Password {
+        /// The account email. An identifier, not a secret.
+        admin_email: String,
+        /// The account password. A secret.
+        admin_password: String,
+    },
+}
+
+impl Credential {
+    /// The non-secret half, safe to print — an access id or an email. Use this
+    /// for any operator-facing message; there is deliberately no accessor that
+    /// returns the secret half.
+    #[must_use]
+    pub fn principal(&self) -> &str {
+        match self {
+            Self::AccessKey { access_id, .. } => access_id,
+            Self::Password { admin_email, .. } => admin_email,
+        }
+    }
+
+    /// The akeyless `access_type` wire value this credential authenticates as.
+    #[must_use]
+    pub fn access_type(&self) -> &'static str {
+        match self {
+            Self::AccessKey { .. } => "access_key",
+            Self::Password { .. } => "password",
+        }
+    }
+}
+
 impl AkeylessClient {
     /// Bind to an akeyless API endpoint, e.g.
     /// `https://api.akeyless.example`.
@@ -97,10 +152,37 @@ impl AkeylessClient {
     /// [`AkeylessError::Api`] on transport/auth failure, [`AkeylessError::NoToken`]
     /// if akeyless answers without a token.
     pub async fn authenticate(&self, access_id: &str, access_key: &str) -> Result<Session> {
+        self.authenticate_with(&Credential::AccessKey {
+            access_id: access_id.to_string(),
+            access_key: access_key.to_string(),
+        })
+        .await
+    }
+
+    /// **Observe.** Authenticate with any supported [`Credential`] and return a
+    /// [`Session`]. This reads your own identity; it changes nothing.
+    ///
+    /// This is the ONE place an akeyless `Auth` body is constructed — a new
+    /// `access_type` is a new [`Credential`] variant plus one arm here, never a
+    /// second copy of this function. [`AkeylessClient::authenticate`] is a thin
+    /// delegate over it.
+    ///
+    /// # Errors
+    /// [`AkeylessError::Api`] on transport/auth failure, [`AkeylessError::NoToken`]
+    /// if akeyless answers 200 without a token.
+    pub async fn authenticate_with(&self, credential: &Credential) -> Result<Session> {
         let mut body = models::Auth::new();
-        body.access_id = Some(access_id.to_string());
-        body.access_key = Some(access_key.to_string());
-        body.access_type = Some("access_key".to_string());
+        body.access_type = Some(credential.access_type().to_string());
+        match credential {
+            Credential::AccessKey { access_id, access_key } => {
+                body.access_id = Some(access_id.clone());
+                body.access_key = Some(access_key.clone());
+            }
+            Credential::Password { admin_email, admin_password } => {
+                body.admin_email = Some(admin_email.clone());
+                body.admin_password = Some(admin_password.clone());
+            }
+        }
         let out = v2_api::auth(&self.config, body)
             .await
             .map_err(|e| describe("auth", e))?;
@@ -161,6 +243,46 @@ impl AkeylessClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `principal()` returns the NON-secret half for both variants, and there is
+    /// deliberately no accessor for the secret half — the type is what keeps a
+    /// credential out of an operator-facing string.
+    #[test]
+    fn principal_is_the_non_secret_half_for_both_variants() {
+        let ak = Credential::AccessKey {
+            access_id: "p-abc123".into(),
+            access_key: "SECRET-must-not-appear".into(),
+        };
+        assert_eq!(ak.principal(), "p-abc123");
+        assert_eq!(ak.access_type(), "access_key");
+
+        let pw = Credential::Password {
+            admin_email: "admin@example.com".into(),
+            admin_password: "SECRET-must-not-appear".into(),
+        };
+        assert_eq!(pw.principal(), "admin@example.com");
+        assert_eq!(pw.access_type(), "password");
+
+        // The secret never leaks through the one operator-facing accessor.
+        for c in [&ak, &pw] {
+            assert!(
+                !c.principal().contains("SECRET"),
+                "principal() must never expose the secret half"
+            );
+        }
+    }
+
+    /// The two wire values must stay distinct and exact — akeyless dispatches on
+    /// `access_type`, so a typo here authenticates as the wrong scheme (or not at
+    /// all) with no local error.
+    #[test]
+    fn access_type_wire_values_are_exact_and_distinct() {
+        let ak = Credential::AccessKey { access_id: "p".into(), access_key: "k".into() };
+        let pw = Credential::Password { admin_email: "e".into(), admin_password: "p".into() };
+        assert_eq!(ak.access_type(), "access_key");
+        assert_eq!(pw.access_type(), "password");
+        assert_ne!(ak.access_type(), pw.access_type());
+    }
 
     #[test]
     fn effect_classification_matches_the_verb_set() {
