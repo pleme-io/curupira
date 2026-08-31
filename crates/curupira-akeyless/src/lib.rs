@@ -16,7 +16,7 @@
 pub mod client;
 pub mod error;
 
-pub use client::{AkeylessClient, NewIdentity, Session};
+pub use client::{AkeylessClient, Credential, NewIdentity, Session};
 pub use error::{AkeylessError, Result};
 
 // Re-export the shared gate so consumers get ONE Effect/Authorization, not a copy.
