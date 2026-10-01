@@ -121,6 +121,19 @@ in
       '';
     };
 
+    perPageSiteTools = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Also register one MCP tool per site page, region and control
+        (`<site>_<page>_goto`, `<site>_<page>_read_<region>`, `<site>_run_tests`, …).
+
+        Off by default: the generic `site_goto`, `site_read`, `site_act` and
+        `site_run_tests` tools take the site, page and region as arguments, so
+        the tool count does not grow with the number of sites and pages.
+      '';
+    };
+
     cdpTimeoutMs = lib.mkOption {
       type = lib.types.int;
       default = 60000;
@@ -142,6 +155,8 @@ in
       CURUPIRA_CDP_TIMEOUT = toString cfg.cdpTimeoutMs;
     } // lib.optionalAttrs (cfg.bundle != null) {
       CURUPIRA_SITES_BUNDLE = cfg.bundle;
+    } // lib.optionalAttrs cfg.perPageSiteTools {
+      CURUPIRA_SITES_PER_PAGE_TOOLS = "true";
     };
 
     # The bundle is also linked to the path the server looks in by default, so a

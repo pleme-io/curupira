@@ -72,7 +72,23 @@ pub fn render(profile: &ConsoleProfile) -> Result<String> {
         }
     }
 
+    s.push_str("## Tools\n\n");
+    s.push_str(&format!(
+        "curupira serves every profile through a fixed set of generic tools whose arguments name \
+         the site, page and region: `site_goto`, `site_read`, `site_act`, `site_run_tests`, plus \
+         `site_context` and `site_list`. For this profile, `site` is `\"{}\"`. An unknown site, \
+         page or region is refused with the legal values. Per-page tools (`{}_<page>_goto`, …) \
+         are registered only when curupira runs with `CURUPIRA_SITES_PER_PAGE_TOOLS=true`.\n\n",
+        profile.id,
+        toolgen::slug(&profile.id)
+    ));
+
     s.push_str("## Reading\n\n");
+    s.push_str(&format!(
+        "Read with `site_read {{site: \"{}\", page, region}}`, where `region` is a read name from \
+         the tables above.\n\n",
+        profile.id
+    ));
     s.push_str(
         "Every read answers with a **status**, not a bare value: `found`, `empty` (the element \
          is there and holds nothing — a finding, not an error) or `absent` (the locator matched \
@@ -96,13 +112,17 @@ pub fn render(profile: &ConsoleProfile) -> Result<String> {
             mutating.len(),
             tools.len()
         ));
-        s.push_str("<details><summary>Mutating tools</summary>\n\n");
-        for t in &mutating {
-            s.push_str(&format!(
-                "- `{}` — {}\n",
-                t.name,
-                t.describes.as_deref().unwrap_or("effect unknown")
-            ));
+        s.push_str("<details><summary>Mutating controls</summary>\n\n");
+        for p in &profile.pages {
+            for a in p.actions.iter().filter(|a| a.effect == Effect::Mutate) {
+                s.push_str(&format!(
+                    "- `site_act {{site: \"{}\", page: \"{}\", control: \"{}\"}}` — {}\n",
+                    profile.id,
+                    p.name,
+                    a.name,
+                    if a.describes.is_empty() { "effect unknown" } else { &a.describes }
+                ));
+            }
         }
         s.push_str("\n</details>\n\n");
     }
@@ -123,10 +143,12 @@ pub fn render(profile: &ConsoleProfile) -> Result<String> {
     s.push_str("## Navigating\n\n");
     let gotos = tools.iter().filter(|t| t.kind == ToolKind::Goto).count();
     s.push_str(&format!(
-        "{gotos} `*_goto` tool(s). Each waits for the page's declared ready signals and reports \
-         which never held, so a timeout ends in a diagnosis rather than a bare failure. A page \
-         whose only readiness evidence is its URL is refused at build time — a URL is true before \
-         any content renders.\n",
+        "{gotos} page(s), each reached with `site_goto {{site: \"{}\", page}}`; a route with \
+         `{{param}}` placeholders takes them in `params`. Each navigation waits for the page's \
+         declared ready signals and reports which never held, so a timeout ends in a diagnosis \
+         rather than a bare failure. A page whose only readiness evidence is its URL is refused at \
+         build time — a URL is true before any content renders.\n",
+        profile.id
     ));
 
     Ok(s)
@@ -165,8 +187,18 @@ pages:
         let s = render(&profile(WITH_MUTATION)).unwrap();
         assert!(s.contains("Pages: 1"));
         assert!(s.contains("(1 mutating)"));
-        assert!(s.contains("acme_home_act_nuke"));
         assert!(s.contains("destroys the cluster"));
+    }
+
+    #[test]
+    fn agents_are_pointed_at_the_generic_site_tools() {
+        let s = render(&profile(WITH_MUTATION)).unwrap();
+        assert!(s.contains(r#"site_goto {site: "acme", page}"#), "{s}");
+        assert!(s.contains(r#"site_read {site: "acme", page, region}"#), "{s}");
+        assert!(s.contains(r#"site_act {site: "acme", page: "home", control: "nuke"}"#), "{s}");
+        assert!(!s.contains("acme_home_act_nuke"), "{s}");
+        assert!(!s.contains("`*_goto`"), "{s}");
+        assert!(s.contains("CURUPIRA_SITES_PER_PAGE_TOOLS"), "{s}");
     }
 
     #[test]

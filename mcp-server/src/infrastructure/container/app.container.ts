@@ -246,7 +246,8 @@ export function registerToolProviders(container: Container): void {
     consoleBufferService: container.resolve(ConsoleBufferServiceToken),
     networkBufferService: container.resolve(NetworkBufferServiceToken),
     minioService,
-    screenshotsEnabled: globalConfig?.features?.screenshots?.enabled || false
+    screenshotsEnabled: globalConfig?.features?.screenshots?.enabled || false,
+    sitePerPageTools: globalConfig?.features?.sites?.perPageTools
   };
 
   // Special deps for Chrome tools that need discovery service

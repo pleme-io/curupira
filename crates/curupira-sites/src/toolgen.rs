@@ -253,7 +253,7 @@ fn tool_name(site: &str, page: &str, verb: &str, leaf: &str) -> String {
 /// Collapsing runs matters: `delete-cluster` and `delete_cluster` must not both
 /// become distinct-looking names that differ only by a character the host may
 /// normalize, and `a--b` should not yield `a__b` while `a-b` yields `a_b`.
-fn slug(s: &str) -> String {
+pub(crate) fn slug(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut last_us = false;
     for c in s.chars() {

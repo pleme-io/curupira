@@ -17,6 +17,7 @@ export interface ProviderDependencies {
   consoleBufferService?: IConsoleBufferService;
   networkBufferService?: INetworkBufferService;
   screenshotsEnabled?: boolean;
+  sitePerPageTools?: boolean;
 }
 
 export interface IToolProviderFactory {

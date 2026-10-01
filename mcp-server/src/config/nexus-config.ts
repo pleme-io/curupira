@@ -117,6 +117,9 @@ const ConfigSchema = z.object({
     screenshots: z.object({
       enabled: z.boolean().default(false),
     }),
+    sites: z.object({
+      perPageTools: z.boolean().default(false),
+    }).default({}),
   }),
 });
 
@@ -285,6 +288,7 @@ export class NexusConfigLoader {
 
       // Features
       { env: 'FEATURES_SCREENSHOTS_ENABLED', path: 'features.screenshots.enabled', type: 'boolean' },
+      { env: 'CURUPIRA_SITES_PER_PAGE_TOOLS', path: 'features.sites.perPageTools', type: 'boolean' },
     ];
     
     for (const mapping of envMappings) {
@@ -301,11 +305,12 @@ export class NexusConfigLoader {
     switch (type) {
       case 'boolean':
         return value.toLowerCase() === 'true';
-      case 'number':
+      case 'number': {
         const num = Number(value);
         if (isNaN(num)) throw new Error(`Invalid number value: ${value}`);
         return num;
-      case 'array':
+      }
+      case 'array': {
         const items = value.split(',').map(item => item.trim());
         if (arrayType === 'number') {
           return items.map(item => {
@@ -315,6 +320,7 @@ export class NexusConfigLoader {
           });
         }
         return items;
+      }
       default:
         return value;
     }
