@@ -33,15 +33,13 @@
         workspaceRoot = self;
       };
 
-      mcpServer = pkgs.symlinkJoin {
-        name = "curupira-mcp-server";
-        paths = [ mcpServerUnwrapped ];
+      mcpServer = pkgs.runCommand "curupira-mcp-server" {
         nativeBuildInputs = [ pkgs.makeWrapper ];
-        postBuild = ''
-          wrapProgram $out/bin/curupira-mcp --set-default CURUPIRA_AX_BIN ${curupiraAx}/bin/curupira-ax
-        '';
         meta = (mcpServerUnwrapped.meta or { }) // { mainProgram = "curupira-mcp"; };
-      };
+      } ''
+        makeWrapper ${mcpServerUnwrapped}/bin/curupira-mcp $out/bin/curupira-mcp \
+          --set-default CURUPIRA_AX_BIN ${curupiraAx}/bin/curupira-ax
+      '';
 
       # The profile compiler. Built with plain rustPlatform rather than
       # substrate's rust-tool flake builder: this is one small crate with a
