@@ -1,0 +1,30 @@
+[package]
+name = "curupira-ax"
+version = "0.1.0"
+description = "Drive native macOS app UI through the Accessibility API: the macos-app backend of curupira's site profiles"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[lib]
+name = "curupira_ax"
+path = "src/lib.rs"
+
+[[bin]]
+name = "curupira-ax"
+path = "src/main.rs"
+
+[dependencies]
+curupira-sites = { path = "../curupira-sites" }
+clap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"

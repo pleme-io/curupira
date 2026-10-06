@@ -1,9 +1,10 @@
 {
   "schema_version": 2,
-  "cargo_lock_sha256": "16d7b95af4d8bb36666ea834ec1343f854a43f42aeb9818af3a32bbd1604a325",
+  "cargo_lock_sha256": "1e345baf3f133aa984ade8d2c48c87f8f627585d640f9b598951c6edcee11372",
   "manifest_sha256": {
-    "Cargo.toml": "435b7f99a58857dd7c5702abdc5c74617b834dd8a9a3dbc1499b6f86edea8a02",
+    "Cargo.toml": "2d64ea079a42403ee53fccda6f80b9380642c86ae856e92bbefc983c333edb8b",
     "crates/curupira-akeyless/Cargo.toml": "22d49e891ab53cfb62248edb4d112890b86c0cde28b009db785666f9b3c59b61",
+    "crates/curupira-ax/Cargo.toml": "4bf66770ab9aa0ddceb4e2b346a76b7377ecb2fff8ba539b4ca90f6e06d9de94",
     "crates/curupira-e2e/Cargo.toml": "dcea7ef516712fdd458ffb6bb561fa4e34ac57c624a052cc9e3d085a09dc5488",
     "crates/curupira-sites/Cargo.toml": "80beb7669a210987c5cbe701698aed9e40757ad35c7328559a48d413249fd550"
   },
@@ -1083,6 +1084,56 @@
               "macros",
               "rt-multi-thread"
             ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          }
+        ],
+        "build_dependencies": [],
+        "features": []
+      },
+      "curupira-ax-0.1.0": {
+        "runtime_dependencies": [
+          {
+            "name": "clap",
+            "package_key": "clap-4.6.6",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "curupira_sites",
+            "package_key": "curupira-sites-0.1.0",
+            "kind": "normal",
+            "features": [],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde",
+            "package_key": "serde-1.0.229",
+            "kind": "normal",
+            "features": [
+              "derive"
+            ],
+            "uses_default_features": true,
+            "optional": false,
+            "target": null,
+            "tree": "target"
+          },
+          {
+            "name": "serde_json",
+            "package_key": "serde_json-1.0.151",
+            "kind": "normal",
+            "features": [],
             "uses_default_features": true,
             "optional": false,
             "target": null,
@@ -8389,6 +8440,19 @@
       "binaries": [
         {
           "name": "curupira-akeyless",
+          "path": "src/main.rs"
+        }
+      ]
+    },
+    "curupira-ax-0.1.0": {
+      "edition": "2024",
+      "lib_target": {
+        "name": "curupira_ax",
+        "path": "src/lib.rs"
+      },
+      "binaries": [
+        {
+          "name": "curupira-ax",
           "path": "src/main.rs"
         }
       ]
