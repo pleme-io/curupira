@@ -63,6 +63,17 @@ in
       description = "The curupira-sites profile compiler.";
     };
 
+    axPackage = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.system}.curupira-ax;
+      description = ''
+        The macos-app backend: drives native app UI through the Accessibility
+        API. The server package already points CURUPIRA_AX_BIN at its own copy;
+        this one is on PATH for authoring (`curupira-ax survey`, `trusted`,
+        `run-tests --profile`).
+      '';
+    };
+
     sites = lib.mkOption {
       type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
       default = { };
@@ -81,7 +92,13 @@ in
         }
       '';
       description = ''
-        Console profiles, keyed by id. Compiled into a bundle at build time.
+        Profiles, keyed by id. Compiled into a bundle at build time.
+
+        A profile without `target` (or with `target = "browser"`) describes a
+        web console. One with `target = "macos-app"` describes a native app by
+        `bundle_id`, with `views` whose locators are Accessibility roles and
+        text matchers instead of CSS; it goes through the same compiler, the
+        same validation and the same generic site tools.
 
         A profile describing a third-party console belongs in a PRIVATE
         repository — its routes and menu structure describe someone else's
@@ -149,7 +166,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package cfg.sitesPackage ];
+    home.packages = [ cfg.package cfg.sitesPackage cfg.axPackage ];
 
     home.sessionVariables = {
       CURUPIRA_CDP_TIMEOUT = toString cfg.cdpTimeoutMs;

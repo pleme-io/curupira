@@ -26,11 +26,21 @@
       substrateLib = substrate.libFor { inherit pkgs system; };
       plemeLinkerPkg = pleme-linker.packages.${system}.default;
 
-      mcpServer = substrateLib.mkTypescriptToolAuto {
+      mcpServerUnwrapped = substrateLib.mkTypescriptToolAuto {
         src = self + "/mcp-server";
         plemeLinker = plemeLinkerPkg;
         parentTsconfig = self + "/tsconfig.json";
         workspaceRoot = self;
+      };
+
+      mcpServer = pkgs.symlinkJoin {
+        name = "curupira-mcp-server";
+        paths = [ mcpServerUnwrapped ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          wrapProgram $out/bin/curupira-mcp --set-default CURUPIRA_AX_BIN ${curupiraAx}/bin/curupira-ax
+        '';
+        meta = (mcpServerUnwrapped.meta or { }) // { mainProgram = "curupira-mcp"; };
       };
 
       # The profile compiler. Built with plain rustPlatform rather than
@@ -66,6 +76,19 @@
         };
       };
 
+      curupiraAx = pkgs.rustPlatform.buildRustPackage {
+        pname = "curupira-ax";
+        version = "0.1.0";
+        src = self;
+        cargoLock = commonCargoLock;
+        buildAndTestSubdir = "crates/curupira-ax";
+        doCheck = true;
+        meta = {
+          description = "Drive native macOS app UI through the Accessibility API for curupira's macos-app site profiles";
+          mainProgram = "curupira-ax";
+        };
+      };
+
       # The runtime akeyless API client: wraps the generated SDK behind the
       # borrowed-ground gate. This one DOES compile akeyless-api + reqwest + tokio,
       # so it is a heavier build than curupira-sites and is a separate package.
@@ -93,6 +116,7 @@
         default = mcpServer;
         mcp-server = mcpServer;
         curupira-sites = curupiraSites;
+        curupira-ax = curupiraAx;
         curupira-akeyless = curupiraAkeyless;
       };
 
@@ -100,12 +124,13 @@
         default = { type = "app"; program = "${mcpServer}/bin/curupira-mcp"; };
         mcp = { type = "app"; program = "${mcpServer}/bin/curupira-mcp"; };
         sites = { type = "app"; program = "${curupiraSites}/bin/curupira-sites"; };
+        ax = { type = "app"; program = "${curupiraAx}/bin/curupira-ax"; };
         akeyless = { type = "app"; program = "${curupiraAkeyless}/bin/curupira-akeyless"; };
         "regen:all" = { type = "app"; program = "${regenApp}"; };
       };
 
       checks = {
-        inherit mcpServer curupiraSites;
+        inherit mcpServer curupiraSites curupiraAx;
       };
 
       devShells.default = pkgs.mkShell {
@@ -137,6 +162,7 @@
         curupira = final: prev: {
           curupira-mcp = self.packages.${final.system}.mcp-server;
           curupira-sites = self.packages.${final.system}.curupira-sites;
+          curupira-ax = self.packages.${final.system}.curupira-ax;
         };
         default = curupira;
       };

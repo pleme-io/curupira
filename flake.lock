@@ -3817,11 +3817,11 @@
         "tatara-lisp": "tatara-lisp"
       },
       "locked": {
-        "lastModified": 1786013251,
-        "narHash": "sha256-Y9a4RKnTitOow1b8kpxS7khjrGqtqRr9F38ult6iFhQ=",
+        "lastModified": 1791123909,
+        "narHash": "sha256-50jR2tCB9c4lIsG0adNALr45iToPow3LgZHTpkUaeFs=",
         "owner": "pleme-io",
         "repo": "substrate",
-        "rev": "7cde12cf6663c92b503b3794a48d3946221a6fc8",
+        "rev": "45714f2f9e8a26c7512a7f7e214e59b3bfd9b977",
         "type": "github"
       },
       "original": {
