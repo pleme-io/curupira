@@ -24,6 +24,7 @@
 //! here rather than a comment in a runbook — see [`profile`] for the two
 //! planners and the honest statement of what the type does and does not prove.
 
+pub mod app;
 pub mod emit;
 pub mod error;
 pub mod mapper;
@@ -35,7 +36,7 @@ pub mod testplan;
 pub mod toolgen;
 
 pub use error::{Result, SitesError};
-pub use profile::{Authorization, ConsoleProfile, Effect};
+pub use profile::{Authorization, ConsoleProfile, Effect, Profile, TargetKind};
 pub use terminal::{CmdOut, DRIVER_JS, TerminalConfig};
 pub use toolgen::{Bundle, SiteBundle, ToolSpec};
 pub use shell::{Shaped, Structured, structure, prefer_structured};

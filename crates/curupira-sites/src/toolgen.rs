@@ -30,9 +30,11 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::app::{AppProfile, AxOp, AxPerform, View};
 use crate::emit;
 use crate::error::{Result, SitesError};
-use crate::profile::{ConsoleProfile, Effect, Page};
+use crate::profile::{ConsoleProfile, Effect, Page, Profile};
+use crate::testplan::{CompiledAppTest, CompiledTest};
 
 /// What driving a generated tool does, mirrored from the profile so the TS side
 /// can enforce the borrowed-ground gate without re-reading the profile.
@@ -58,8 +60,8 @@ pub struct ToolSpec {
     pub page: String,
     /// JSON Schema for the tool's arguments. Never omitted — see the module doc.
     pub json_schema: serde_json::Value,
-    /// The JavaScript expression to evaluate in the page.
-    pub js: String,
+    #[serde(flatten)]
+    pub program: Program,
     /// For `Goto`: the absolute URL template, placeholders unresolved.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url_template: Option<String>,
@@ -74,19 +76,78 @@ pub struct ToolSpec {
     pub describes: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Program {
+    Js { js: String },
+    Ax { ax: Box<AxOp> },
+}
+
+impl Program {
+    #[must_use]
+    pub fn js(&self) -> Option<&str> {
+        match self {
+            Program::Js { js } => Some(js),
+            Program::Ax { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub fn ax(&self) -> Option<&AxOp> {
+        match self {
+            Program::Ax { ax } => Some(ax.as_ref()),
+            Program::Js { .. } => None,
+        }
+    }
+}
+
 /// One console's compiled surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteBundle {
     pub id: String,
-    pub base_url: String,
-    #[serde(rename = "match")]
-    pub match_urls: Vec<String>,
+    #[serde(flatten)]
+    pub target: SiteTarget,
     pub tools: Vec<ToolSpec>,
-    /// The site's compiled qualifying suite — carried IN the bundle so the MCP
-    /// server can run it per-site on demand with no reference back to the profile.
-    /// Empty for a site with no suite.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tests: Vec<crate::testplan::CompiledTest>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "target", rename_all = "kebab-case")]
+pub enum SiteTarget {
+    Browser {
+        base_url: String,
+        #[serde(rename = "match")]
+        match_urls: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tests: Vec<CompiledTest>,
+    },
+    MacosApp {
+        bundle_id: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tests: Vec<CompiledAppTest>,
+    },
+}
+
+impl SiteBundle {
+    #[must_use]
+    pub fn match_urls(&self) -> &[String] {
+        match &self.target {
+            SiteTarget::Browser { match_urls, .. } => match_urls,
+            SiteTarget::MacosApp { .. } => &[],
+        }
+    }
+
+    #[must_use]
+    pub fn test_count(&self) -> usize {
+        match &self.target {
+            SiteTarget::Browser { tests, .. } => tests.len(),
+            SiteTarget::MacosApp { tests, .. } => tests.len(),
+        }
+    }
+
+    #[must_use]
+    pub fn claims_url(&self, url: &str) -> bool {
+        self.match_urls().iter().any(|m| !m.is_empty() && url.contains(m.as_str()))
+    }
 }
 
 /// Every compiled console, as the TS server loads it.
@@ -99,7 +160,7 @@ pub struct Bundle {
 }
 
 /// Current bundle schema version.
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 /// How long a generated `goto` waits for its page to become ready.
 /// Generous on purpose: a console behind a slow backend is normal, and the
@@ -110,16 +171,28 @@ pub const READY_POLL_MS: u64 = 150;
 
 impl Bundle {
     /// Compile a set of profiles.
-    pub fn compile(profiles: &[ConsoleProfile]) -> Result<Self> {
+    pub fn compile(profiles: &[Profile]) -> Result<Self> {
         let mut sites = Vec::with_capacity(profiles.len());
         for p in profiles {
             p.validate()?;
-            sites.push(SiteBundle {
-                id: p.id.clone(),
-                base_url: p.base_url.clone(),
-                match_urls: p.match_urls.clone(),
-                tools: generate(p)?,
-                tests: crate::testplan::compile(p)?,
+            sites.push(match p {
+                Profile::Browser(p) => SiteBundle {
+                    id: p.id.clone(),
+                    target: SiteTarget::Browser {
+                        base_url: p.base_url.clone(),
+                        match_urls: p.match_urls.clone(),
+                        tests: crate::testplan::compile(p)?,
+                    },
+                    tools: generate(p)?,
+                },
+                Profile::MacosApp(p) => SiteBundle {
+                    id: p.id.clone(),
+                    target: SiteTarget::MacosApp {
+                        bundle_id: p.bundle_id.clone(),
+                        tests: crate::testplan::compile_app(p),
+                    },
+                    tools: generate_app(p),
+                },
             });
         }
         let b = Self { schema_version: SCHEMA_VERSION, sites };
@@ -155,7 +228,7 @@ impl Bundle {
     /// that care should surface [`Bundle::sites_for_url`] instead.
     #[must_use]
     pub fn site_for_url(&self, url: &str) -> Option<&SiteBundle> {
-        self.sites.iter().find(|s| s.match_urls.iter().any(|m| !m.is_empty() && url.contains(m)))
+        self.sites.iter().find(|s| s.claims_url(url))
     }
 
     /// Every site claiming this URL — so an ambiguous match is visible rather
@@ -164,7 +237,7 @@ impl Bundle {
     pub fn sites_for_url(&self, url: &str) -> Vec<&SiteBundle> {
         self.sites
             .iter()
-            .filter(|s| s.match_urls.iter().any(|m| !m.is_empty() && url.contains(m)))
+            .filter(|s| s.claims_url(url))
             .collect()
     }
 }
@@ -181,7 +254,7 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
                 kind: ToolKind::Read,
                 page: page.name.clone(),
                 json_schema: no_args_schema(),
-                js: emit::emit_read_checked(r)?,
+                program: Program::Js { js: emit::emit_read_checked(r)? },
                 url_template: None,
                 tab: None,
                 effect: None,
@@ -209,7 +282,7 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
                 kind: ToolKind::Act,
                 page: page.name.clone(),
                 json_schema: if mutating { grant_schema() } else { no_args_schema() },
-                js: emit::emit_click(&a.locator)?,
+                program: Program::Js { js: emit::emit_click(&a.locator)? },
                 url_template: None,
                 tab: None,
                 effect: Some(a.effect),
@@ -230,12 +303,106 @@ fn goto_tool(profile: &ConsoleProfile, page: &Page) -> Result<ToolSpec> {
         json_schema: params_schema(&params),
         // A waiter, not a probe. Round F1 measured why: a probe nobody acts
         // on let reads run against the previous page's DOM.
-        js: emit::emit_ready_wait(&page.ready, READY_TIMEOUT_MS, READY_POLL_MS)?,
+        program: Program::Js { js: emit::emit_ready_wait(&page.ready, READY_TIMEOUT_MS, READY_POLL_MS)? },
         url_template: Some(join_url(&profile.base_url, &page.route)),
         tab: page.tab.clone(),
         effect: None,
         describes: None,
     })
+}
+
+#[must_use]
+pub fn generate_app(profile: &AppProfile) -> Vec<ToolSpec> {
+    let mut out = Vec::new();
+    for view in &profile.views {
+        out.push(app_goto_tool(profile, view));
+        for r in &view.reads {
+            out.push(ToolSpec {
+                name: tool_name(&profile.id, &view.name, "read", &r.name),
+                description: format!(
+                    "Read '{}' in the '{}' view of {}",
+                    r.name, view.name, profile.bundle_id
+                ),
+                kind: ToolKind::Read,
+                page: view.name.clone(),
+                json_schema: no_args_schema(),
+                program: Program::Ax {
+                    ax: Box::new(AxOp::Read { read: r.clone(), limit: emit::DEFAULT_READ_LIMIT }),
+                },
+                url_template: None,
+                tab: None,
+                effect: None,
+                describes: None,
+            });
+        }
+        for a in &view.actions {
+            out.push(app_act_tool(profile, view, a));
+        }
+    }
+    out
+}
+
+fn app_act_tool(profile: &AppProfile, view: &View, a: &crate::app::AxAction) -> ToolSpec {
+    let mutating = a.effect == Effect::Mutate;
+    let verb = match a.perform {
+        AxPerform::Press => "Press",
+        AxPerform::SetValue => "Set the value of",
+    };
+    let mut schema = if mutating { grant_schema() } else { no_args_schema() };
+    if a.perform == AxPerform::SetValue {
+        schema["properties"]["value"] = serde_json::json!({
+            "type": "string",
+            "description": "The text to set on the element"
+        });
+        let mut required = schema["required"].as_array().cloned().unwrap_or_default();
+        required.push(serde_json::json!("value"));
+        schema["required"] = serde_json::Value::Array(required);
+    }
+    ToolSpec {
+        name: tool_name(&profile.id, &view.name, "act", &a.name),
+        description: if mutating {
+            format!(
+                "MUTATES the host: {} ({} '{}' in the '{}' view of {}). Requires an explicit \
+                 operator grant naming this action.",
+                if a.describes.is_empty() { "changes state" } else { &a.describes },
+                verb.to_lowercase(),
+                a.name,
+                view.name,
+                profile.bundle_id
+            )
+        } else {
+            format!(
+                "{verb} '{}' in the '{}' view of {} (read-only)",
+                a.name, view.name, profile.bundle_id
+            )
+        },
+        kind: ToolKind::Act,
+        page: view.name.clone(),
+        json_schema: schema,
+        program: Program::Ax { ax: Box::new(AxOp::Act { action: a.clone() }) },
+        url_template: None,
+        tab: None,
+        effect: Some(a.effect),
+        describes: Some(a.describes.clone()),
+    }
+}
+
+fn app_goto_tool(profile: &AppProfile, view: &View) -> ToolSpec {
+    ToolSpec {
+        name: tool_name(&profile.id, &view.name, "goto", ""),
+        description: format!(
+            "Bring {} to the front and wait until the '{}' view is ready",
+            profile.bundle_id, view.name
+        ),
+        kind: ToolKind::Goto,
+        page: view.name.clone(),
+        json_schema: params_schema(&[]),
+        program: Program::Ax { ax: Box::new(AxOp::Ready { ready: view.ready.clone() }) },
+        url_template: None,
+        tab: None,
+        effect: None,
+        describes: None,
+    }
 }
 
 /// `{site}_{page}_{verb}[_{leaf}]`, sanitized to what an MCP tool name allows.
@@ -420,20 +587,20 @@ pages:
     fn colliding_tool_names_across_sites_are_refused() {
         // Two profiles with the SAME id: the host registry would accept the
         // duplicates and silently keep the last, so this must fail here.
-        let err = Bundle::compile(&[profile("same"), profile("same")]).unwrap_err();
+        let err = Bundle::compile(&[profile("same").into(), profile("same").into()]).unwrap_err();
         assert!(err.to_string().contains("collision"), "{err}");
     }
 
     #[test]
     fn distinct_site_ids_do_not_collide() {
-        let b = Bundle::compile(&[profile("alpha"), profile("beta")]).unwrap();
+        let b = Bundle::compile(&[profile("alpha").into(), profile("beta").into()]).unwrap();
         assert_eq!(b.sites.len(), 2);
         assert_eq!(b.schema_version, SCHEMA_VERSION);
     }
 
     #[test]
     fn url_matching_selects_the_live_site() {
-        let b = Bundle::compile(&[profile("alpha")]).unwrap();
+        let b = Bundle::compile(&[profile("alpha").into()]).unwrap();
         let hit = b.site_for_url("https://platform.example.invalid/clusters/69").unwrap();
         assert_eq!(hit.id, "alpha");
         assert!(b.site_for_url("https://elsewhere.test/x").is_none());
@@ -445,7 +612,7 @@ pages:
         let mut c = profile("beta");
         a.match_urls = vec!["shared.example".to_string()];
         c.match_urls = vec!["shared.example".to_string()];
-        let b = Bundle::compile(&[a, c]).unwrap();
+        let b = Bundle::compile(&[a.into(), c.into()]).unwrap();
         assert_eq!(b.sites_for_url("https://shared.example/x").len(), 2);
     }
 
@@ -454,7 +621,7 @@ pages:
         // Not everything. An unreviewed draft must not silently own every tab.
         let mut p = profile("draft");
         p.match_urls.clear();
-        let b = Bundle::compile(&[p]).unwrap();
+        let b = Bundle::compile(&[p.into()]).unwrap();
         assert!(b.site_for_url("https://anything.test/").is_none());
     }
 
@@ -462,14 +629,14 @@ pages:
     fn a_profile_without_an_id_is_refused() {
         let mut p = profile("acme");
         p.id = String::new();
-        assert!(Bundle::compile(&[p]).unwrap_err().to_string().contains("no 'id'"));
+        assert!(Bundle::compile(&[p.into()]).unwrap_err().to_string().contains("no 'id'"));
     }
 
     #[test]
     fn an_id_that_would_not_survive_a_tool_name_is_refused() {
         let mut p = profile("acme");
         p.id = "has spaces/and.dots".to_string();
-        assert!(Bundle::compile(&[p]).unwrap_err().to_string().contains("must be ASCII"));
+        assert!(Bundle::compile(&[p.into()]).unwrap_err().to_string().contains("must be ASCII"));
     }
 
     #[test]
@@ -486,9 +653,66 @@ pages:
         assert!(route_params("/no/params").is_empty());
     }
 
+    fn calculator() -> Profile {
+        Profile::from_yaml(include_str!("../../../sites/example-macos-app.yaml")).unwrap()
+    }
+
+    #[test]
+    fn a_macos_app_profile_compiles_into_the_same_goto_read_act_vocabulary() {
+        let b = Bundle::compile(&[calculator()]).unwrap();
+        let s = &b.sites[0];
+        assert!(matches!(&s.target, SiteTarget::MacosApp { bundle_id, tests } if bundle_id == "com.apple.calculator" && tests.len() == 1));
+        let names: Vec<&str> = s.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "example_calculator_keypad_goto",
+                "example_calculator_keypad_read_display",
+                "example_calculator_keypad_read_buttons",
+                "example_calculator_keypad_read_sheet",
+                "example_calculator_keypad_act_clear",
+            ]
+        );
+        assert!(s.tools.iter().all(|t| t.program.ax().is_some() && t.program.js().is_none()));
+        let clear = s.tools.last().unwrap();
+        assert_eq!(clear.effect, Some(Effect::Mutate));
+        assert_eq!(clear.json_schema["required"][0], "authorized_by");
+        assert!(clear.description.starts_with("MUTATES the host: discards the current calculation"));
+        assert!(s.match_urls().is_empty(), "a native target claims no tab");
+        assert!(b.site_for_url("https://anything.test/").is_none());
+    }
+
+    #[test]
+    fn a_set_value_tool_requires_the_value_and_a_grant_when_it_mutates() {
+        let y = include_str!("../../../sites/example-macos-app.yaml")
+            .replace("        describes: discards the current calculation", "        describes: types\n        perform: set-value");
+        let b = Bundle::compile(&[Profile::from_yaml(&y).unwrap()]).unwrap();
+        let t = b.sites[0].tools.last().unwrap();
+        assert_eq!(t.json_schema["required"], serde_json::json!(["authorized_by", "value"]));
+        assert_eq!(t.json_schema["additionalProperties"], false);
+    }
+
+    #[test]
+    fn the_bundle_names_each_sites_target_and_program_in_its_json() {
+        let b = Bundle::compile(&[profile("acme").into(), calculator()]).unwrap();
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["schema_version"], 2);
+        assert_eq!(j["sites"][0]["target"], "browser");
+        assert_eq!(j["sites"][0]["base_url"], "https://platform.example.invalid");
+        assert!(j["sites"][0]["tools"][0]["js"].is_string());
+        assert_eq!(j["sites"][1]["target"], "macos-app");
+        assert_eq!(j["sites"][1]["bundle_id"], "com.apple.calculator");
+        assert!(j["sites"][1].get("base_url").is_none());
+        assert_eq!(j["sites"][1]["tools"][0]["ax"]["op"], "ready");
+        assert_eq!(j["sites"][1]["tools"][1]["ax"]["op"], "read");
+        assert_eq!(j["sites"][1]["tools"][1]["ax"]["read"]["locator"]["within"]["role"], "AXWindow");
+        let back: Bundle = serde_json::from_value(j).unwrap();
+        assert_eq!(back, b);
+    }
+
     #[test]
     fn the_bundle_round_trips_through_json() {
-        let b = Bundle::compile(&[profile("acme")]).unwrap();
+        let b = Bundle::compile(&[profile("acme").into()]).unwrap();
         let s = serde_json::to_string(&b).unwrap();
         let back: Bundle = serde_json::from_str(&s).unwrap();
         assert_eq!(b, back, "the TS server reads exactly what was written");

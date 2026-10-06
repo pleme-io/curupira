@@ -397,20 +397,7 @@ impl ConsoleProfile {
     /// wins depends on vector order — a silent, order-dependent wrong answer
     /// rather than a failure.
     pub fn validate(&self) -> Result<()> {
-        if self.id.trim().is_empty() {
-            return Err(SitesError::Config(
-                "profile has no 'id' — it namespaces every generated tool, and without it two \
-                 profiles sharing a page name would silently overwrite each other's tools"
-                    .to_string(),
-            ));
-        }
-        if !self.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
-            return Err(SitesError::Config(format!(
-                "profile id '{}' must be ASCII alphanumeric, '-' or '_' — it becomes part of an \
-                 MCP tool name",
-                self.id
-            )));
-        }
+        validate_id(&self.id)?;
         dup_check("page", self.pages.iter().map(|p| p.name.as_str()))?;
         for p in &self.pages {
             dup_check(&format!("read on page '{}'", p.name), p.reads.iter().map(|r| r.name.as_str()))?;
@@ -491,6 +478,108 @@ impl ConsoleProfile {
             }
         }
         out
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum TargetKind {
+    Browser,
+    MacosApp,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Profile {
+    Browser(ConsoleProfile),
+    MacosApp(crate::app::AppProfile),
+}
+
+const APP_ONLY_KEYS: [&str; 2] = ["bundle_id", "views"];
+
+impl Profile {
+    pub fn from_yaml(text: &str) -> Result<Self> {
+        let mut doc: serde_yaml::Value = serde_yaml::from_str(text)
+            .map_err(|e| SitesError::Config(format!("profile: {e}")))?;
+        let target = doc.as_mapping_mut().and_then(|m| m.remove("target"));
+        let kind = match target {
+            None => TargetKind::Browser,
+            Some(t) => serde_yaml::from_value(t)
+                .map_err(|e| SitesError::Config(format!("profile target: {e}")))?,
+        };
+        match kind {
+            TargetKind::Browser => {
+                if let Some(m) = doc.as_mapping() {
+                    for k in APP_ONLY_KEYS {
+                        if m.contains_key(k) {
+                            return Err(SitesError::Config(format!(
+                                "browser profile carries '{k}', which only a macos-app profile \
+                                 has — set `target: macos-app` or remove it"
+                            )));
+                        }
+                    }
+                }
+                Ok(Profile::Browser(ConsoleProfile::from_yaml(text)?))
+            }
+            TargetKind::MacosApp => {
+                let rest = serde_yaml::to_string(&doc)
+                    .map_err(|e| SitesError::Config(format!("macos-app profile: {e}")))?;
+                let p: crate::app::AppProfile = serde_yaml::from_str(&rest)
+                    .map_err(|e| SitesError::Config(format!("macos-app profile: {e}")))?;
+                p.validate()?;
+                Ok(Profile::MacosApp(p))
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Profile::Browser(p) => &p.id,
+            Profile::MacosApp(p) => &p.id,
+        }
+    }
+
+    #[must_use]
+    pub fn kind(&self) -> TargetKind {
+        match self {
+            Profile::Browser(_) => TargetKind::Browser,
+            Profile::MacosApp(_) => TargetKind::MacosApp,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        match self {
+            Profile::Browser(p) => p.validate(),
+            Profile::MacosApp(p) => p.validate(),
+        }
+    }
+
+    #[must_use]
+    pub fn lints(&self) -> Vec<String> {
+        match self {
+            Profile::Browser(p) => p.lints(),
+            Profile::MacosApp(_) => Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn mutating_actions(&self) -> Vec<String> {
+        match self {
+            Profile::Browser(p) => p.mutating_actions(),
+            Profile::MacosApp(p) => p.mutating_actions(),
+        }
+    }
+}
+
+impl From<ConsoleProfile> for Profile {
+    fn from(p: ConsoleProfile) -> Self {
+        Profile::Browser(p)
+    }
+}
+
+impl From<crate::app::AppProfile> for Profile {
+    fn from(p: crate::app::AppProfile) -> Self {
+        Profile::MacosApp(p)
     }
 }
 
@@ -598,7 +687,24 @@ fn lookup<'a>(
     Ok((p, a))
 }
 
-fn dup_check<'a>(what: &str, names: impl Iterator<Item = &'a str>) -> Result<()> {
+pub(crate) fn validate_id(id: &str) -> Result<()> {
+    if id.trim().is_empty() {
+        return Err(SitesError::Config(
+            "profile has no 'id' — it namespaces every generated tool, and without it two \
+             profiles sharing a page name would silently overwrite each other's tools"
+                .to_string(),
+        ));
+    }
+    if !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err(SitesError::Config(format!(
+            "profile id '{id}' must be ASCII alphanumeric, '-' or '_' — it becomes part of an \
+             MCP tool name"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn dup_check<'a>(what: &str, names: impl Iterator<Item = &'a str>) -> Result<()> {
     let mut seen = std::collections::BTreeSet::new();
     for n in names {
         if !seen.insert(n) {
@@ -832,6 +938,35 @@ pages:
 "#;
         let err = ConsoleProfile::from_yaml(y).unwrap_err();
         assert!(err.to_string().contains("duplicate read"), "{err}");
+    }
+
+    #[test]
+    fn a_profile_without_a_target_is_a_browser_profile_parsed_exactly_as_before() {
+        let y = include_str!("../../../sites/example-console.yaml");
+        let p = Profile::from_yaml(y).unwrap();
+        assert_eq!(p.kind(), TargetKind::Browser);
+        assert_eq!(p, Profile::Browser(ConsoleProfile::from_yaml(y).unwrap()));
+    }
+
+    #[test]
+    fn an_explicit_browser_target_is_the_same_profile() {
+        let y = include_str!("../../../sites/example-console.yaml");
+        let explicit = format!("target: browser\n{y}");
+        assert_eq!(Profile::from_yaml(&explicit).unwrap(), Profile::from_yaml(y).unwrap());
+    }
+
+    #[test]
+    fn an_unknown_target_names_the_legal_ones() {
+        let err = Profile::from_yaml("target: android\nid: x\n").unwrap_err().to_string();
+        assert!(err.contains("browser") && err.contains("macos-app"), "{err}");
+    }
+
+    #[test]
+    fn a_browser_profile_carrying_app_fields_is_refused() {
+        let err = Profile::from_yaml("id: x\nbase_url: https://x.example.invalid\nbundle_id: com.x.y\npages: []\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("bundle_id") && err.contains("macos-app"), "{err}");
     }
 
     #[test]

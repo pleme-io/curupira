@@ -1,0 +1,102 @@
+[
+  {
+    "test": {
+      "name": "everything holds",
+      "route": "/",
+      "survey_js": "S",
+      "expect_controls": ["Sign in", "Access Key"],
+      "expect_routes": ["/registration"],
+      "must_settle": true,
+      "read_checks": [{ "read": "heading", "js": "R", "expect_status": "found" }]
+    },
+    "survey": {
+      "controls": [{ "text": "Sign in" }, { "text": "Access Key" }, { "text": "Email" }],
+      "routes": ["https://x.example.invalid/registration"],
+      "settled": true
+    },
+    "reads": [{ "status": "found", "value": "Manage" }],
+    "expect": { "name": "everything holds", "passed": true, "failures": [] }
+  },
+  {
+    "test": {
+      "name": "every expectation misses",
+      "route": "/",
+      "survey_js": "S",
+      "expect_controls": ["Sign in", "Access Key"],
+      "expect_routes": ["/registration"],
+      "must_settle": true,
+      "read_checks": [{ "read": "heading", "js": "R", "expect_status": "found" }]
+    },
+    "survey": { "controls": [{ "text": "Sign in" }], "routes": [], "settled": false },
+    "reads": [{ "status": "empty", "value": "" }],
+    "expect": {
+      "name": "every expectation misses",
+      "passed": false,
+      "failures": [
+        "expected control 'Access Key' not present",
+        "expected route '/registration' not present",
+        "page did not settle",
+        "read 'heading': expected found, got empty"
+      ]
+    }
+  },
+  {
+    "test": {
+      "name": "a control match is exact, a route match is a substring",
+      "route": "/",
+      "survey_js": "S",
+      "expect_controls": ["Pods"],
+      "expect_routes": ["clusters"]
+    },
+    "survey": { "controls": [{ "text": "Pods · 179" }], "routes": ["/clusters/69"] },
+    "reads": [],
+    "expect": {
+      "name": "a control match is exact, a route match is a substring",
+      "passed": false,
+      "failures": ["expected control 'Pods' not present"]
+    }
+  },
+  {
+    "test": {
+      "name": "settling is only judged when asked for",
+      "route": "/",
+      "survey_js": "S"
+    },
+    "survey": { "settled": false },
+    "reads": [],
+    "expect": { "name": "settling is only judged when asked for", "passed": true, "failures": [] }
+  },
+  {
+    "test": {
+      "name": "a skipped read fails by count",
+      "route": "/",
+      "survey_js": "S",
+      "read_checks": [
+        { "read": "a", "js": "A", "expect_status": "absent" },
+        { "read": "b", "js": "B", "expect_status": "found" }
+      ]
+    },
+    "survey": {},
+    "reads": [{ "status": "absent", "value": null }],
+    "expect": {
+      "name": "a skipped read fails by count",
+      "passed": false,
+      "failures": ["executor ran 1 read-checks, plan has 2"]
+    }
+  },
+  {
+    "test": {
+      "name": "a result with no status is named, not passed",
+      "route": "/",
+      "survey_js": "S",
+      "read_checks": [{ "read": "a", "js": "A", "expect_status": "empty" }]
+    },
+    "survey": { "controls": "not-a-list", "routes": null },
+    "reads": [{ "value": "" }],
+    "expect": {
+      "name": "a result with no status is named, not passed",
+      "passed": false,
+      "failures": ["read 'a': expected empty, got <no status>"]
+    }
+  }
+]

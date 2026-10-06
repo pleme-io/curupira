@@ -7,7 +7,8 @@
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use curupira_sites::{Bundle, ConsoleProfile, DRIVER_JS};
+use curupira_sites::toolgen::SiteTarget;
+use curupira_sites::{Bundle, ConsoleProfile, DRIVER_JS, Profile};
 
 #[derive(Parser)]
 #[command(name = "curupira-sites", about = "Compile web-console profiles into MCP tools")]
@@ -191,7 +192,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Cmd::Curate { dir, id, match_urls } => {
-            let profiles = load_all(&[dir])?;
+            let profiles = browser_only(load_all(&[dir])?, "curate");
             let [draft] = &profiles[..] else {
                 return Err(format!(
                     "curate takes exactly one draft profile; found {}",
@@ -211,7 +212,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Cmd::Skill { dirs, out } => {
-            for pr in &load_all(&dirs)? {
+            for pr in &browser_only(load_all(&dirs)?, "skill") {
                 let md = curupira_sites::skill::render(pr)?;
                 match &out {
                     None => println!("{md}"),
@@ -237,7 +238,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut linted = 0usize;
             for pr in &profiles {
                 for l in pr.lints() {
-                    eprintln!("lint [{}]: {l}", pr.id);
+                    eprintln!("lint [{}]: {l}", pr.id());
                     linted += 1;
                 }
             }
@@ -250,12 +251,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Cmd::List { dirs } => {
             let b = Bundle::compile(&load_all(&dirs)?)?;
             for s in &b.sites {
-                println!("{}  ({})", s.id, s.base_url);
-                println!("  match: {}", if s.match_urls.is_empty() {
-                    "<none — never auto-selected>".to_string()
-                } else {
-                    s.match_urls.join(", ")
-                });
+                match &s.target {
+                    SiteTarget::Browser { base_url, match_urls, .. } => {
+                        println!("{}  ({})", s.id, base_url);
+                        println!("  match: {}", if match_urls.is_empty() {
+                            "<none — never auto-selected>".to_string()
+                        } else {
+                            match_urls.join(", ")
+                        });
+                    }
+                    SiteTarget::MacosApp { bundle_id, .. } => {
+                        println!("{}  (macos-app {bundle_id})", s.id);
+                    }
+                }
                 for t in &s.tools {
                     // Mutating tools are marked in the listing because this is
                     // the review surface: what could change the host if granted.
@@ -272,11 +280,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let b = Bundle::compile(&load_all(&dirs)?)?;
             let mut total = 0usize;
             for s in &b.sites {
-                if s.tests.is_empty() {
+                let tests = match &s.target {
+                    SiteTarget::Browser { tests, .. } => tests,
+                    SiteTarget::MacosApp { tests, .. } => {
+                        if !tests.is_empty() {
+                            println!("{}  ({} case(s), macos-app)", s.id, tests.len());
+                        }
+                        for t in tests {
+                            total += 1;
+                            let mut want = vec![format!("{} ready signal(s)", t.ready.len())];
+                            if !t.expect_controls.is_empty() {
+                                want.push(format!("{} control(s)", t.expect_controls.len()));
+                            }
+                            if !t.read_checks.is_empty() {
+                                want.push(format!("{} read(s)", t.read_checks.len()));
+                            }
+                            println!("    {}  @ view {}  [{}]", t.name, t.view, want.join(", "));
+                        }
+                        continue;
+                    }
+                };
+                if tests.is_empty() {
                     continue;
                 }
-                println!("{}  ({} case(s))", s.id, s.tests.len());
-                for t in &s.tests {
+                println!("{}  ({} case(s))", s.id, tests.len());
+                for t in tests {
                     total += 1;
                     let mut want = Vec::new();
                     if !t.expect_controls.is_empty() {
@@ -294,14 +322,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     println!("    {}  @ {}  [{}]", t.name, t.route, want.join(", "));
                 }
             }
-            println!("{total} case(s) across {} site(s)", b.sites.iter().filter(|s| !s.tests.is_empty()).count());
+            println!("{total} case(s) across {} site(s)", b.sites.iter().filter(|s| s.test_count() > 0).count());
             Ok(())
         }
         Cmd::Build { dirs, out, pretty } => {
             let profiles = load_all(&dirs)?;
             for pr in &profiles {
                 for l in pr.lints() {
-                    eprintln!("warning [{}]: {l}", pr.id);
+                    eprintln!("warning [{}]: {l}", pr.id());
                 }
             }
             let b = Bundle::compile(&profiles)?;
@@ -336,7 +364,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 /// A directory containing no profiles is an **error**, not an empty result: the
 /// overwhelmingly likely cause is a wrong path, and silently compiling an empty
 /// bundle would leave the server with no site tools and nothing saying why.
-fn load_all(dirs: &[PathBuf]) -> Result<Vec<ConsoleProfile>, Box<dyn std::error::Error>> {
+fn browser_only(profiles: Vec<Profile>, verb: &str) -> Vec<ConsoleProfile> {
+    profiles
+        .into_iter()
+        .filter_map(|p| match p {
+            Profile::Browser(p) => Some(p),
+            Profile::MacosApp(p) => {
+                eprintln!("{verb}: skipping '{}': {verb} renders browser profiles only", p.id);
+                None
+            }
+        })
+        .collect()
+}
+
+fn load_all(dirs: &[PathBuf]) -> Result<Vec<Profile>, Box<dyn std::error::Error>> {
     let mut out = Vec::new();
     for d in dirs {
         let before = out.len();
@@ -352,7 +393,7 @@ fn load_all(dirs: &[PathBuf]) -> Result<Vec<ConsoleProfile>, Box<dyn std::error:
     Ok(out)
 }
 
-fn collect(dir: &Path, out: &mut Vec<ConsoleProfile>) -> Result<(), Box<dyn std::error::Error>> {
+fn collect(dir: &Path, out: &mut Vec<Profile>) -> Result<(), Box<dyn std::error::Error>> {
     if !dir.is_dir() {
         return Err(format!("not a directory: {}", dir.display()).into());
     }
@@ -371,7 +412,7 @@ fn collect(dir: &Path, out: &mut Vec<ConsoleProfile>) -> Result<(), Box<dyn std:
             continue;
         }
         let text = std::fs::read_to_string(&p)?;
-        let profile = ConsoleProfile::from_yaml(&text)
+        let profile = Profile::from_yaml(&text)
             .map_err(|err| format!("{}: {err}", p.display()))?;
         out.push(profile);
     }

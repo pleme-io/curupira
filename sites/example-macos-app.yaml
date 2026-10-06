@@ -1,0 +1,75 @@
+# A native-app example: Apple's stock Calculator, driven through the macOS
+# Accessibility API by curupira-ax. Stock Apple UI describes nobody's private
+# system, so unlike a web console's profile this one can live in a public repo.
+#
+# `target: macos-app` selects the backend. Without it a profile is a browser
+# profile, exactly as before.
+#
+# The locators below were written before a live survey of Calculator's AX tree
+# could be taken on the authoring machine (Accessibility was not granted). They
+# lean on structure that holds across Calculator versions — a window titled
+# Calculator holding buttons and a static-text display — rather than on button
+# labels. Confirm or tighten them with:
+#
+#   curupira-ax survey --bundle-id com.apple.calculator --pretty
+target: macos-app
+id: example-calculator
+bundle_id: com.apple.calculator
+
+views:
+  - name: keypad
+    # A view that reads or presses needs an element-present signal. A window
+    # title is set before the window's content exists, so on its own it would
+    # let reads run against whatever was there before.
+    ready:
+      - !window-title { contains: Calculator }
+      - !element-present
+        role: AXButton
+        within:
+          role: AXWindow
+    reads:
+      - name: display
+        # `within` scopes a locator to elements under an ancestor, at any depth.
+        locator:
+          role: AXStaticText
+          within:
+            role: AXWindow
+        kind: !text
+      - name: buttons
+        locator:
+          role: AXButton
+          within:
+            role: AXWindow
+        kind: !count
+      - name: sheet
+        locator:
+          role: AXSheet
+        kind: !text
+    actions:
+      - name: clear
+        # Text matchers are { exact | prefix | contains }, case- and
+        # whitespace-insensitive, like the browser's button-text locators.
+        # "clear" covers both labels Calculator shows: All Clear and Clear.
+        locator:
+          role: AXButton
+          description: { contains: clear }
+          within:
+            role: AXWindow
+        # Pressing it discards the running calculation: a mutation, so it needs
+        # an explicit authorized_by at call time.
+        effect: mutate
+        describes: discards the current calculation
+
+# The qualifying suite: bring Calculator forward, wait for the view's ready
+# signals (a case fails as "page did not settle" when they never hold), then
+# judge each read's found / empty / absent verdict.
+tests:
+  - name: keypad renders
+    view: keypad
+    expect_reads:
+      - read: display
+        outcome: found
+      - read: buttons
+        outcome: found
+      - read: sheet
+        outcome: absent

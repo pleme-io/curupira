@@ -13,6 +13,8 @@ use serde_json::Value;
 use crate::emit::emit_read_checked;
 use crate::mapper::emit_survey_when_settled;
 use crate::error::{Result, SitesError};
+use crate::app::{AppProfile, AxRead, AxReady};
+use crate::emit::DEFAULT_READ_LIMIT;
 use crate::profile::ConsoleProfile;
 
 /// A compiled read-check: the JS to run and the status it must produce.
@@ -52,6 +54,100 @@ pub struct CompiledTest {
     /// The read-checks to run and score.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub read_checks: Vec<CompiledReadCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledAxReadCheck {
+    pub read: String,
+    pub op: AxRead,
+    pub limit: usize,
+    pub expect_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledAppTest {
+    pub name: String,
+    pub view: String,
+    pub ready: Vec<AxReady>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub expect_controls: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub read_checks: Vec<CompiledAxReadCheck>,
+}
+
+pub trait Expectations {
+    fn case_name(&self) -> &str;
+    fn expected_controls(&self) -> &[String];
+    fn expected_routes(&self) -> &[String];
+    fn must_settle(&self) -> bool;
+    fn read_expectations(&self) -> Vec<(&str, &str)>;
+}
+
+impl Expectations for CompiledTest {
+    fn case_name(&self) -> &str {
+        &self.name
+    }
+    fn expected_controls(&self) -> &[String] {
+        &self.expect_controls
+    }
+    fn expected_routes(&self) -> &[String] {
+        &self.expect_routes
+    }
+    fn must_settle(&self) -> bool {
+        self.must_settle
+    }
+    fn read_expectations(&self) -> Vec<(&str, &str)> {
+        self.read_checks.iter().map(|c| (c.read.as_str(), c.expect_status.as_str())).collect()
+    }
+}
+
+impl Expectations for CompiledAppTest {
+    fn case_name(&self) -> &str {
+        &self.name
+    }
+    fn expected_controls(&self) -> &[String] {
+        &self.expect_controls
+    }
+    fn expected_routes(&self) -> &[String] {
+        &[]
+    }
+    fn must_settle(&self) -> bool {
+        true
+    }
+    fn read_expectations(&self) -> Vec<(&str, &str)> {
+        self.read_checks.iter().map(|c| (c.read.as_str(), c.expect_status.as_str())).collect()
+    }
+}
+
+#[must_use]
+pub fn compile_app(profile: &AppProfile) -> Vec<CompiledAppTest> {
+    profile
+        .tests
+        .iter()
+        .filter_map(|t| {
+            let view = profile.view(&t.view)?;
+            let read_checks = t
+                .expect_reads
+                .iter()
+                .filter_map(|er| {
+                    let read = view.reads.iter().find(|r| r.name == er.read)?;
+                    Some(CompiledAxReadCheck {
+                        read: er.read.clone(),
+                        op: read.clone(),
+                        limit: DEFAULT_READ_LIMIT,
+                        expect_status: er.outcome.as_status().to_string(),
+                    })
+                })
+                .collect();
+            Some(CompiledAppTest {
+                name: t.name.clone(),
+                view: t.view.clone(),
+                ready: view.ready.clone(),
+                expect_controls: t.expect_controls.clone(),
+                read_checks,
+            })
+        })
+        .collect()
 }
 
 /// The verdict for one case.
@@ -114,13 +210,13 @@ fn compile_one(profile: &ConsoleProfile, t: &crate::profile::PageTest) -> Result
 /// Score a case's survey result against its expectations. Pure — the one judge
 /// both executors call. Returns the failure lines (empty ⇒ that part passed).
 #[must_use]
-pub fn judge_survey(test: &CompiledTest, survey: &Value) -> Vec<String> {
+pub fn judge_survey<T: Expectations + ?Sized>(test: &T, survey: &Value) -> Vec<String> {
     let mut fails = Vec::new();
     let controls: Vec<&str> = survey["controls"]
         .as_array()
         .map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect())
         .unwrap_or_default();
-    for want in &test.expect_controls {
+    for want in test.expected_controls() {
         if !controls.iter().any(|c| c == want) {
             fails.push(format!("expected control '{want}' not present"));
         }
@@ -129,12 +225,12 @@ pub fn judge_survey(test: &CompiledTest, survey: &Value) -> Vec<String> {
         .as_array()
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
-    for want in &test.expect_routes {
+    for want in test.expected_routes() {
         if !routes.iter().any(|r| r.contains(want.as_str())) {
             fails.push(format!("expected route '{want}' not present"));
         }
     }
-    if test.must_settle && survey["settled"] != Value::Bool(true) {
+    if test.must_settle() && survey["settled"] != Value::Bool(true) {
         fails.push("page did not settle".to_string());
     }
     fails
@@ -144,32 +240,41 @@ pub fn judge_survey(test: &CompiledTest, survey: &Value) -> Vec<String> {
 /// produced the expected verdict.
 #[must_use]
 pub fn judge_read(check: &CompiledReadCheck, result: &Value) -> Option<String> {
+    judge_status(&check.read, &check.expect_status, result)
+}
+
+fn judge_status(read: &str, expect: &str, result: &Value) -> Option<String> {
     let got = result["status"].as_str().unwrap_or("<no status>");
-    if got == check.expect_status {
+    if got == expect {
         None
     } else {
-        Some(format!("read '{}': expected {}, got {}", check.read, check.expect_status, got))
+        Some(format!("read '{read}': expected {expect}, got {got}"))
     }
 }
 
 /// Assemble a [`CaseResult`] from the gathered data. Pure — the executor gathers
 /// `survey` and one `read_results` entry per `read_checks` entry, in order.
 #[must_use]
-pub fn judge_case(test: &CompiledTest, survey: &Value, read_results: &[Value]) -> CaseResult {
+pub fn judge_case<T: Expectations + ?Sized>(
+    test: &T,
+    survey: &Value,
+    read_results: &[Value],
+) -> CaseResult {
     let mut failures = judge_survey(test, survey);
-    for (check, result) in test.read_checks.iter().zip(read_results) {
-        if let Some(f) = judge_read(check, result) {
+    let checks = test.read_expectations();
+    for ((read, expect), result) in checks.iter().zip(read_results) {
+        if let Some(f) = judge_status(read, expect, result) {
             failures.push(f);
         }
     }
-    if read_results.len() != test.read_checks.len() {
+    if read_results.len() != checks.len() {
         failures.push(format!(
             "executor ran {} read-checks, plan has {}",
             read_results.len(),
-            test.read_checks.len()
+            checks.len()
         ));
     }
-    CaseResult { name: test.name.clone(), passed: failures.is_empty(), failures }
+    CaseResult { name: test.case_name().to_string(), passed: failures.is_empty(), failures }
 }
 
 #[cfg(test)]
@@ -214,6 +319,39 @@ mod tests {
         assert!(res.failures.iter().any(|f| f.contains("/registration")), "{:?}", res.failures);
         assert!(res.failures.iter().any(|f| f.contains("settle")), "{:?}", res.failures);
         assert!(res.failures.iter().any(|f| f.contains("expected found, got empty")), "{:?}", res.failures);
+    }
+
+    #[derive(Deserialize)]
+    struct SharedCase {
+        test: CompiledTest,
+        survey: Value,
+        reads: Vec<Value>,
+        expect: CaseResult,
+    }
+
+    #[test]
+    fn the_shared_judge_fixture_is_judged_exactly_as_recorded() {
+        let cases: Vec<SharedCase> =
+            serde_json::from_str(include_str!("../fixtures/judge-cases.json")).unwrap();
+        assert!(cases.len() >= 5);
+        for c in cases {
+            assert_eq!(judge_case(&c.test, &c.survey, &c.reads), c.expect, "{}", c.test.name);
+        }
+    }
+
+    #[test]
+    fn an_app_case_must_be_ready_and_has_no_routes() {
+        let t = CompiledAppTest {
+            name: "keypad".into(),
+            view: "keypad".into(),
+            ready: vec![],
+            expect_controls: vec!["clear".into()],
+            read_checks: vec![],
+        };
+        let ok = judge_case(&t, &json!({"controls":[{"text":"clear"}], "routes": [], "settled": true}), &[]);
+        assert!(ok.passed, "{:?}", ok.failures);
+        let not_ready = judge_case(&t, &json!({"controls":[{"text":"clear"}], "settled": false}), &[]);
+        assert_eq!(not_ready.failures, vec!["page did not settle".to_string()]);
     }
 
     #[test]

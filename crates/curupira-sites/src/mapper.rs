@@ -694,7 +694,7 @@ mod tests {
     fn a_curated_profile_compiles_to_tools_none_of_which_mutate() {
         let draft = draft_profile("d", "https://c.example.invalid", &[survey()]).unwrap();
         let ro = read_only(&draft, "curated", vec!["c.example.invalid".into()]);
-        let b = crate::toolgen::Bundle::compile(&[ro]).unwrap();
+        let b = crate::toolgen::Bundle::compile(&[ro.into()]).unwrap();
         let mutating = b.sites[0].tools.iter().filter(|t| t.effect == Some(Effect::Mutate)).count();
         assert_eq!(mutating, 0, "a read-only curation must expose no mutating tool");
         assert!(!b.sites[0].tools.is_empty());
@@ -762,7 +762,7 @@ mod tests {
         // End of the pipe: survey -> draft -> bundle, with the mutating controls
         // still requiring a grant.
         let p = draft_profile("d", "https://c.example.invalid", &[survey()]).unwrap();
-        let b = crate::toolgen::Bundle::compile(&[p]).unwrap();
+        let b = crate::toolgen::Bundle::compile(&[p.into()]).unwrap();
         assert_eq!(b.sites.len(), 1);
         assert_eq!(b.sites[0].tools.iter().filter(|t| t.effect == Some(Effect::Mutate)).count(), 2);
     }
