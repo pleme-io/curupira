@@ -23,6 +23,7 @@ Curupira is a Model Context Protocol (MCP) debugging tool that provides AI assis
 - 🚀 **Multiple Transports**: WebSocket, HTTP/SSE, and stdio for different deployment scenarios
 - 📦 **Dependency Injection**: Clean architecture with comprehensive DI container
 - 🤖 **AI-Optimized**: Built specifically for AI assistant interaction via MCP
+- 🧭 **Site profiles**: Describe a web console or a native macOS app as data and drive it through generic `site_goto` / `site_read` / `site_act` / `site_run_tests` tools — browser targets over CDP, `macos-app` targets through the Accessibility API (`curupira-ax`). See [crates/curupira-sites](./crates/curupira-sites/README.md).
 
 ## 📚 Documentation
 

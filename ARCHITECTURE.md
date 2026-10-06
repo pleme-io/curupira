@@ -928,6 +928,46 @@ AI/ML Integration Roadmap
     └── Automated test generation
 ```
 
+## Site Targets: Browser Consoles and Native macOS Apps
+
+Beside the CDP debugging tools, curupira drives *targets* described as data. A
+profile (YAML, compiled by `crates/curupira-sites`) names a target's pages or
+views, the reads on them and the controls they expose; the compiled bundle is
+loaded by `site-tools.factory.ts`, which serves every target through one fixed
+set of generic tools: `site_list`, `site_context`, `site_goto`, `site_read`,
+`site_act`, `site_run_tests`.
+
+```
+profile.yaml ──curupira-sites check/build──▶ sites.bundle.json (schema 2)
+                                                  │
+                         site-tools.factory.ts dispatches on site.target
+                         ├── browser   → evaluate the baked JS over CDP
+                         └── macos-app → spawn curupira-ax <verb>, JSON in/out
+                                           └── AXUIElement* via dlopen'd
+                                               HIServices + CoreFoundation
+```
+
+| Rule | Where it holds |
+|---|---|
+| `effect` is `observe` or `mutate`; there is no unknown | `Effect` in curupira-sites; a native profile reuses it |
+| A mutating act needs `authorized_by` | the server's handler (before CDP or a spawn), and `curupira-ax act --authorized-by` again |
+| Every read answers found / empty / absent | the browser read emitter; `curupira-ax` `ReadReport.status` |
+| Reads are capped and say when they were cut | 20,000 chars / whole items; AX walks also cap nodes and depth |
+| Ready only on a named signal | `goto` waits and names the unmet signals; a reading view needs a DOM / element signal |
+| The qualifying suite runs on demand per target | `site_run_tests`; for a native target, `curupira-ax run-tests` runs the Rust judge |
+
+`curupira-ax` is the first non-browser backend. Its C surface is contained: the
+crate is `#![deny(unsafe_code)]` with one `#[allow(unsafe_code)]` module, `seam`,
+which `dlopen`s HIServices and CoreFoundation and binds the dozen functions it
+uses. Locator resolution, read shaping, caps and verdicts sit behind the `AxTree`
+trait and are tested against an in-memory tree with no Accessibility grant. Absence
+is typed: `not-trusted` (naming System Settings › Privacy & Security ›
+Accessibility and the responsible app, found with
+`responsibility_get_pid_responsible_for_pid`), `app-not-running`, `unsupported`
+(any OS but macOS). The server finds the binary through `CURUPIRA_AX_BIN`, which
+the nix package sets, then `PATH`; `CURUPIRA_AX_TIMEOUT_MS` bounds each call
+(default 60s).
+
 ---
 
 ## Summary
@@ -936,6 +976,7 @@ Curupira represents a comprehensive, production-ready architecture for AI-assist
 
 - **Robust MCP protocol implementation** for seamless AI integration
 - **Deep browser integration** through Chrome extensions and DevTools Protocol
+- **Declarative targets** — browser consoles and native macOS apps — driven through one profile language and one set of generic site tools
 - **Advanced debugging capabilities** including time-travel and performance profiling
 - **Production-grade infrastructure** with Kubernetes, monitoring, and security
 - **Extensible architecture** ready for future enhancements
