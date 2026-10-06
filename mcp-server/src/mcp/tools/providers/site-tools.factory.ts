@@ -24,6 +24,7 @@
  * asserted afterwards.
  */
 
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -42,7 +43,8 @@ interface ToolSpec {
   kind: 'goto' | 'read' | 'act';
   page: string;
   json_schema: Record<string, unknown>;
-  js: string;
+  js?: string;
+  ax?: AxOp;
   url_template?: string;
   tab?: string;
   effect?: 'observe' | 'mutate';
@@ -68,10 +70,19 @@ interface CompiledTest {
   read_checks?: CompiledReadCheck[];
 }
 
+interface AxOp {
+  op: 'ready' | 'read' | 'act';
+  [field: string]: unknown;
+}
+
+type TargetKind = 'browser' | 'macos-app';
+
 interface SiteBundle {
   id: string;
-  base_url: string;
-  match: string[];
+  target?: TargetKind;
+  base_url?: string;
+  match?: string[];
+  bundle_id?: string;
   tools: ToolSpec[];
   tests?: CompiledTest[];
 }
@@ -81,10 +92,107 @@ interface Bundle {
   sites: SiteBundle[];
 }
 
+const isNative = (site: SiteBundle): boolean => site.target === 'macos-app';
+
+type AxVerb = 'goto' | 'read' | 'act' | 'run-tests';
+
+type AxRun = { ok: true; value: Record<string, unknown> } | { ok: false; error: string };
+
+const AX_DEFAULT_TIMEOUT_MS = 60_000;
+
+function axBinary(): string {
+  return process.env.CURUPIRA_AX_BIN || 'curupira-ax';
+}
+
+function axTimeoutMs(): number {
+  const n = Number(process.env.CURUPIRA_AX_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : AX_DEFAULT_TIMEOUT_MS;
+}
+
+function parseOutcome(raw: string): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(raw.trim()) as Record<string, unknown> | null;
+    return v && typeof v.outcome === 'string' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+export function runAx(args: string[], input: unknown, timeoutMs: number = axTimeoutMs()): Promise<AxRun> {
+  const bin = axBinary();
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (r: AxRun) => {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(r);
+      }
+    };
+    const child = spawn(bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => (stdout += String(d)));
+    child.stderr.on('data', (d) => (stderr += String(d)));
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish({ ok: false, error: `curupira-ax ${args[0]} timed out after ${timeoutMs}ms (CURUPIRA_AX_TIMEOUT_MS)` });
+    }, timeoutMs);
+    child.on('error', (err: NodeJS.ErrnoException) =>
+      finish({
+        ok: false,
+        error:
+          err.code === 'ENOENT'
+            ? `curupira-ax not found at '${bin}': set CURUPIRA_AX_BIN or put curupira-ax on PATH`
+            : `curupira-ax could not start: ${err.message}`,
+      }),
+    );
+    child.on('close', (code) => {
+      const value = parseOutcome(stdout);
+      finish(
+        value
+          ? { ok: true, value }
+          : {
+              ok: false,
+              error: `curupira-ax ${args[0]} exited ${code} without a typed outcome: ${(stderr || stdout).trim().slice(0, 500)}`,
+            },
+      );
+    });
+    child.stdin.on('error', () => undefined);
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+const AX_SUCCESS = new Set(['ready', 'read', 'acted', 'tests', 'survey', 'trusted']);
+
+export function axVerdict(value: Record<string, unknown>): { success: boolean; error?: string; result: Record<string, unknown> } {
+  const { outcome, ...result } = value;
+  const o = String(outcome);
+  if (AX_SUCCESS.has(o)) return { success: true, result };
+  const s = (k: string) => (typeof result[k] === 'string' ? (result[k] as string) : '');
+  const error = (() => {
+    switch (o) {
+      case 'not-trusted':
+        return `not trusted for Accessibility. ${s('remedy')}`;
+      case 'app-not-running':
+        return s('remedy') || `${s('bundle_id')} is not running`;
+      case 'absent':
+        return `control '${s('action')}' is not on screen (${s('locator')})`;
+      case 'ambiguous':
+        return `control '${s('action')}' matches ${String(result.matches)} elements (${s('locator')}); scope the locator with 'within' — nothing was pressed`;
+      case 'refused':
+        return `refused: ${s('reason')}`;
+      default:
+        return s('message') || s('reason') || `curupira-ax answered '${o}'`;
+    }
+  })();
+  return { success: false, error: `${o}: ${error}`, result: { outcome: o, ...result } };
+}
+
 // ── The judge — a byte-for-byte port of curupira-sites::testplan ─────────────
 // Kept identical to the Rust so a verdict is the same whichever executor ran it.
 
-function judgeSurvey(test: CompiledTest, survey: Record<string, unknown>): string[] {
+export function judgeSurvey(test: CompiledTest, survey: Record<string, unknown>): string[] {
   const fails: string[] = [];
   const controls = Array.isArray(survey.controls)
     ? (survey.controls as Array<Record<string, unknown>>).map((c) => String(c?.text ?? ''))
@@ -100,22 +208,22 @@ function judgeSurvey(test: CompiledTest, survey: Record<string, unknown>): strin
   return fails;
 }
 
-function judgeRead(check: CompiledReadCheck, result: Record<string, unknown>): string | null {
+export function judgeRead(check: CompiledReadCheck, result: Record<string, unknown>): string | null {
   const got = typeof result.status === 'string' ? result.status : '<no status>';
   return got === check.expect_status
     ? null
     : `read '${check.read}': expected ${check.expect_status}, got ${got}`;
 }
 
-function judgeCase(
+export function judgeCase(
   test: CompiledTest,
   survey: Record<string, unknown>,
   readResults: Array<Record<string, unknown>>,
 ): { name: string; passed: boolean; failures: string[] } {
   const failures = judgeSurvey(test, survey);
   const checks = test.read_checks ?? [];
-  checks.forEach((check, i) => {
-    const f = judgeRead(check, readResults[i] ?? {});
+  checks.slice(0, readResults.length).forEach((check, i) => {
+    const f = judgeRead(check, readResults[i]);
     if (f) failures.push(f);
   });
   if (readResults.length !== checks.length) {
@@ -125,7 +233,8 @@ function judgeCase(
 }
 
 /** The bundle schema this provider understands. */
-const SUPPORTED_SCHEMA = 1;
+const SUPPORTED_SCHEMA = 2;
+const READABLE_SCHEMAS = new Set([1, SUPPORTED_SCHEMA]);
 
 /**
  * Where the bundle lives by default.
@@ -357,6 +466,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         description:
           'Navigate the active tab to a page of a console profile (CDP Page.navigate), activate its tab if the ' +
           'profile names one, then wait until the page is ready. Pages with {params} need them in `params`. ' +
+          'For a macos-app target, bring the app to the front and wait for the view\'s ready signals instead. ' +
           `Legal values — ${this.describeCatalogue((p) => {
             if (!p.goto) return null;
             const params = routeParams(p.goto.url_template ?? '');
@@ -372,6 +482,10 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
               type: 'object',
               additionalProperties: { type: 'string' },
               description: 'Route parameters, keyed by the {name} in the page route',
+            },
+            launch: {
+              type: 'boolean',
+              description: 'macos-app targets only: start the app if it is not running',
             },
           },
           required: ['site', 'page'],
@@ -436,6 +550,10 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
               type: 'string',
               description: "The operator's explicit go-ahead for THIS action, in their own words. Required for a MUTATES control.",
             },
+            value: {
+              type: 'string',
+              description: 'macos-app set-value controls only: the text to set',
+            },
           },
           required: ['site', 'page', 'control'],
           additionalProperties: false,
@@ -455,14 +573,20 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         argsSchema: PERMISSIVE,
         jsonSchema: {
           type: 'object',
-          properties: { site: this.siteSchema(testSites) },
+          properties: {
+            site: this.siteSchema(testSites),
+            launch: {
+              type: 'boolean',
+              description: 'macos-app targets only: start the app if it is not running',
+            },
+          },
           required: ['site'],
           additionalProperties: false,
         },
         handler: async (args: Record<string, unknown>) => {
           const site = this.resolveSite(args.site, testSites);
           if (!site.ok) return { success: false, error: site.error };
-          return this.runTests(site.value.site);
+          return this.runTests(site.value.site, args.launch === true);
         },
       });
     }
@@ -496,6 +620,9 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     const page = this.resolvePage(site.value, args.page, hasGoto);
     if (!page.ok) return { success: false, error: page.error };
     const goto = page.value.goto as ToolSpec;
+    if (isNative(site.value.site)) {
+      return this.axDrive(site.value.site, goto, 'goto', { launch: args.launch === true }, [], {});
+    }
     const template = goto.url_template;
     if (!template) {
       return { success: false, error: `page '${page.value.name}' of site '${site.value.site.id}' has no route to navigate to` };
@@ -514,7 +641,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     const url = required.reduce((u, p) => u.split(`{${p}}`).join(encodeURIComponent(String(given[p]))), template);
     const nav = await this.navigate(url, goto.tab);
     if (!nav.ok) return { success: false, error: nav.error };
-    const ready = await this.evaluate(goto.js);
+    const ready = await this.evaluate(goto.js ?? '');
     if (!ready.ok) return { success: false, error: ready.error };
     return {
       success: true,
@@ -557,9 +684,9 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     }
     try {
       const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Bundle;
-      if (parsed.schema_version !== SUPPORTED_SCHEMA) {
+      if (!READABLE_SCHEMAS.has(parsed.schema_version)) {
         this.logger.error(
-          { path: p, found: parsed.schema_version, supported: SUPPORTED_SCHEMA },
+          { path: p, found: parsed.schema_version, supported: [...READABLE_SCHEMAS] },
           'site bundle schema mismatch; refusing to load it rather than mis-read its fields',
         );
         return;
@@ -601,10 +728,39 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     });
   }
 
-  private async runTests(site: SiteBundle): Promise<{ success: boolean; error?: string; data?: unknown }> {
+  private async axDrive(
+    site: SiteBundle,
+    spec: ToolSpec,
+    verb: AxVerb,
+    input: Record<string, unknown>,
+    flags: string[],
+    extra: Record<string, unknown>,
+  ): Promise<{ success: boolean; error?: string; data?: unknown }> {
+    if (!site.bundle_id) {
+      return { success: false, error: `site '${site.id}' is a macos-app target with no bundle_id in the bundle` };
+    }
+    const payload = verb === 'run-tests' ? { bundle_id: site.bundle_id, ...input } : { bundle_id: site.bundle_id, op: spec.ax, ...input };
+    const run = await runAx([verb, ...flags], payload);
+    if (!run.ok) return { success: false, error: run.error };
+    const verdict = axVerdict(run.value);
+    const data = {
+      site: site.id,
+      target: 'macos-app',
+      bundleId: site.bundle_id,
+      ...(verb === 'run-tests' ? {} : { page: spec.page, kind: spec.kind }),
+      ...extra,
+      result: verdict.result,
+    };
+    return verdict.success ? { success: true, data } : { success: false, error: verdict.error, data };
+  }
+
+  private async runTests(site: SiteBundle, launch = false): Promise<{ success: boolean; error?: string; data?: unknown }> {
+    if (isNative(site)) {
+      return this.axDrive(site, { name: `${site.id}_run_tests`, description: '', kind: 'goto', page: '', json_schema: {} }, 'run-tests', { tests: site.tests ?? [], launch }, [], {});
+    }
     const cases: Array<{ name: string; passed: boolean; failures: string[] }> = [];
     for (const t of site.tests ?? []) {
-      const nav = await this.navigate(site.base_url.replace(/\/+$/, '') + t.route, t.tab);
+      const nav = await this.navigate((site.base_url ?? '').replace(/\/+$/, '') + t.route, t.tab);
       if (!nav.ok) return { success: false, error: nav.error };
       const surveyRes = await this.evaluate(t.survey_js);
       const survey = surveyRes.ok ? (surveyRes.value as Record<string, unknown>) : {};
@@ -673,7 +829,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
 
   /** Which site claims a URL. First match wins; ambiguity is reported, not resolved. */
   private sitesForUrl(url: string): SiteBundle[] {
-    return this.bundle.sites.filter((s) => s.match.some((m) => m && url.includes(m)));
+    return this.bundle.sites.filter((s) => !isNative(s) && (s.match ?? []).some((m) => m && url.includes(m)));
   }
 
   private registerContextTools(): void {
@@ -685,7 +841,35 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
       jsonSchema: NO_ARGS_SCHEMA,
       handler: async () => {
         const res = await this.evaluate('window.location.href');
-        if (!res.ok) return { success: false, error: res.error };
+        const nativeTargets = this.entries
+          .filter((e) => isNative(e.site))
+          .map((e) => ({
+            id: e.site.id,
+            bundleId: e.site.bundle_id ?? null,
+            views: [...e.pages.values()].map(pageSummary),
+            mutatingControls: [...e.pages.values()].flatMap((p) =>
+              [...p.controls.entries()]
+                .filter(([, spec]) => spec.effect === 'mutate')
+                .map(([control, spec]) => ({ page: p.name, control, describes: spec.describes ?? '' })),
+            ),
+          }));
+        if (!res.ok) {
+          if (nativeTargets.length === 0) return { success: false, error: res.error };
+          return {
+            success: true,
+            data: {
+              url: null,
+              browser: { connected: false, error: res.error },
+              matched: [],
+              ambiguous: false,
+              active: null,
+              pages: [],
+              mutatingControls: [],
+              nativeTargets,
+              loadedSites: this.bundle.sites.map((s) => s.id),
+            },
+          };
+        }
         const url = String(res.value ?? '');
         const matches = this.sitesForUrl(url);
         const active = matches[0] ? this.entries.find((e) => e.site === matches[0]) : undefined;
@@ -713,6 +897,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
                   mutatingTools: matches[0]?.tools.filter((t) => t.effect === 'mutate').map((t) => t.name) ?? [],
                 }
               : {}),
+            ...(nativeTargets.length > 0 ? { nativeTargets } : {}),
             loadedSites: this.bundle.sites.map((s) => s.id),
           },
         };
@@ -721,7 +906,8 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
 
     this.registerTool({
       name: 'site_list',
-      description: 'List every loaded console profile with its pages, readable regions, controls and route params.',
+      description:
+        'List every loaded profile — browser consoles and macos-app targets — with its pages (views), readable regions, controls and route params.',
       argsSchema: PERMISSIVE,
       jsonSchema: NO_ARGS_SCHEMA,
       handler: async () => ({
@@ -729,8 +915,8 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         data: {
           sites: this.entries.map(({ site: s, pages }) => ({
             id: s.id,
-            baseUrl: s.base_url,
-            match: s.match,
+            target: s.target ?? 'browser',
+            ...(isNative(s) ? { bundleId: s.bundle_id } : { baseUrl: s.base_url, match: s.match ?? [] }),
             tools: s.tools.length,
             mutating: s.tools.filter((t) => t.effect === 'mutate').length,
             pages: [...pages.values()].map(pageSummary),
@@ -791,6 +977,13 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
       );
     }
 
+    if (isNative(site)) {
+      const verb: AxVerb = spec.kind;
+      const flags = mutating ? ['--authorized-by', String(args.authorized_by).trim()] : [];
+      const input = typeof args?.value === 'string' ? { value: args.value } : {};
+      return this.axDrive(site, spec, verb, input, flags, extra);
+    }
+
     // ── Refuse to act on the wrong console ────────────────────────────
     // A generated tool is registered for every loaded site, so nothing
     // stops one being called while the tab is somewhere else entirely.
@@ -800,7 +993,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     if (!urlRes.ok) return { success: false, error: urlRes.error };
     const url = String(urlRes.value ?? '');
 
-    if (spec.kind !== 'goto' && !site.match.some((m) => m && url.includes(m))) {
+    if (spec.kind !== 'goto' && !(site.match ?? []).some((m) => m && url.includes(m))) {
       return {
         success: false,
         error:
@@ -809,7 +1002,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
       };
     }
 
-    const evalRes = await this.evaluate(spec.js);
+    const evalRes = await this.evaluate(spec.js ?? '');
     if (!evalRes.ok) return { success: false, error: evalRes.error };
     const value = evalRes.value ?? null;
     return {
