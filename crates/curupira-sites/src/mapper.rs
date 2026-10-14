@@ -355,6 +355,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
                 name: slugish(core_label(stable_label(&c.text))),
                 locator: choose_locator(&c.text),
                 effect: Effect::Mutate,
+                input: None,
                 describes: format!(
                     "UNREVIEWED — discovered by the mapper, never driven. Classified mutate \
                      because its effect is unknown; demote to observe only after deciding what \
@@ -399,7 +400,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             .map(|sel| vec![ReadySignal::SelectorPresent(sel)])
             .unwrap_or_default();
 
-        pages.push(Page { name, route, tab: None, ready, reads, actions });
+        pages.push(Page { name, route, tab: None, ready, reads, actions, events: Vec::new() });
     }
 
     Ok(ConsoleProfile {
@@ -409,6 +410,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
         pages,
         terminal: None,
             tests: Vec::new(),
+        launch: None,
     })
 }
 
@@ -547,6 +549,7 @@ pub fn read_only(profile: &ConsoleProfile, id: &str, match_urls: Vec<String>) ->
         base_url: profile.base_url.clone(),
         match_urls,
         terminal: profile.terminal.clone(),
+        launch: profile.launch.clone(),
         pages: profile
             .pages
             .iter()

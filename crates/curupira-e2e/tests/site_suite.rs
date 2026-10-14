@@ -31,6 +31,7 @@ fn signin_profile() -> ConsoleProfile {
             Read { name: "blank".into(), locator: Locator::Selector("#blank".into()), kind: ReadKind::Text },
         ],
         actions: vec![],
+        events: vec![],
     };
     let test = PageTest {
         name: "sign-in surface".into(),

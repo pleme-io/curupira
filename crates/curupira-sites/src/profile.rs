@@ -191,6 +191,54 @@ pub struct Action {
     /// required so the person granting knows what they are approving.
     #[serde(default)]
     pub describes: String,
+    /// When present the action types text: `locator` is the text box to
+    /// focus, the caller's `value` is inserted as trusted keyboard input, and
+    /// `submit` says how it is sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<TextInput>,
+}
+
+/// How a typing action sends what it typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Submit {
+    /// Press Enter in the focused box.
+    Enter,
+    /// Click this control.
+    Click(Locator),
+}
+
+/// A text-entry action's shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TextInput {
+    /// `None` types without sending, so the operator can review and send.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub submit: Option<Submit>,
+}
+
+/// A stream of things that appear on a page: new messages, new alerts, new
+/// rows. Watching installs an observer on `within`; every added element that
+/// matches `items` (itself or a descendant) and contains any of `contains`
+/// (case-insensitive; empty means all) is buffered as an event until drained.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventStream {
+    pub name: String,
+    /// CSS selector of the container to observe.
+    pub within: String,
+    /// CSS selector of one event item.
+    pub items: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contains: Vec<String>,
+}
+
+/// A desktop application that is itself a Chromium (Electron) and is driven
+/// over the same DevTools protocol once launched with a debugging port.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppLaunch {
+    /// The `.app` bundle path, e.g. `/Applications/Slack.app`.
+    pub app: String,
+    /// The DevTools port to open; distinct from the workspace Chrome's.
+    pub port: u16,
 }
 
 /// One page of a console.
@@ -212,6 +260,8 @@ pub struct Page {
     pub reads: Vec<Read>,
     #[serde(default)]
     pub actions: Vec<Action>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<EventStream>,
 }
 
 impl Page {
@@ -360,6 +410,10 @@ pub struct ConsoleProfile {
     /// per-site, and curupira-e2e runs the same declarative plan against fixtures.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tests: Vec<PageTest>,
+
+    /// Set when the site is an Electron desktop app rather than a web tab.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launch: Option<AppLaunch>,
 }
 
 impl Default for ConsoleProfile {
@@ -371,6 +425,7 @@ impl Default for ConsoleProfile {
             pages: Vec::new(),
             terminal: None,
             tests: Vec::new(),
+            launch: None,
         }
     }
 }

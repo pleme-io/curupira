@@ -74,6 +74,54 @@ pub struct ToolSpec {
     /// For `Act`: what the control does, shown to whoever is asked to grant it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub describes: Option<String>,
+    /// For a typing `Act`: `js` focuses the box, the caller's `value` is sent
+    /// as trusted input, then this says how to submit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<CompiledInput>,
+}
+
+/// A typing action's submit step, compiled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "submit", rename_all = "kebab-case")]
+pub enum CompiledInput {
+    /// Type only; the operator sends.
+    None,
+    /// Press Enter as a trusted key event.
+    Enter,
+    /// Evaluate this click.
+    Click { js: String },
+}
+
+fn compile_input(i: &crate::profile::TextInput) -> Result<CompiledInput> {
+    Ok(match &i.submit {
+        None => CompiledInput::None,
+        Some(crate::profile::Submit::Enter) => CompiledInput::Enter,
+        Some(crate::profile::Submit::Click(l)) => CompiledInput::Click { js: emit::emit_click(l)? },
+    })
+}
+
+/// One page event stream, compiled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompiledEvent {
+    pub page: String,
+    pub name: String,
+    pub install_js: String,
+    pub drain_js: String,
+}
+
+fn compile_events(p: &ConsoleProfile) -> Result<Vec<CompiledEvent>> {
+    let mut out = Vec::new();
+    for page in &p.pages {
+        for s in &page.events {
+            out.push(CompiledEvent {
+                page: page.name.clone(),
+                name: s.name.clone(),
+                install_js: emit::emit_watch_install(s)?,
+                drain_js: emit::emit_watch_drain(&s.name)?,
+            });
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +167,10 @@ pub enum SiteTarget {
         match_urls: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tests: Vec<CompiledTest>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        events: Vec<CompiledEvent>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        launch: Option<crate::profile::AppLaunch>,
     },
     MacosApp {
         bundle_id: String,
@@ -213,6 +265,8 @@ impl Bundle {
                         base_url: p.base_url.clone(),
                         match_urls: p.match_urls.clone(),
                         tests: crate::testplan::compile(p)?,
+                        events: compile_events(p)?,
+                        launch: p.launch.clone(),
                     },
                     tools: generate(p)?,
                 },
@@ -290,6 +344,7 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
                 tab: None,
                 effect: None,
                 describes: None,
+                input: None,
             });
         }
         for a in &page.actions {
@@ -312,12 +367,21 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
                 },
                 kind: ToolKind::Act,
                 page: page.name.clone(),
-                json_schema: if mutating { grant_schema() } else { no_args_schema() },
-                program: Program::Js { js: emit::emit_click(&a.locator)? },
+                json_schema: {
+                    let mut s = if mutating { grant_schema() } else { no_args_schema() };
+                    if a.input.is_some() {
+                        with_value(&mut s, "The text to type");
+                    }
+                    s
+                },
+                program: Program::Js {
+                    js: if a.input.is_some() { emit::emit_focus(&a.locator)? } else { emit::emit_click(&a.locator)? },
+                },
                 url_template: None,
                 tab: None,
                 effect: Some(a.effect),
                 describes: Some(a.describes.clone()),
+                input: a.input.as_ref().map(|i| compile_input(i)).transpose()?,
             });
         }
     }
@@ -339,6 +403,7 @@ fn goto_tool(profile: &ConsoleProfile, page: &Page) -> Result<ToolSpec> {
         tab: page.tab.clone(),
         effect: None,
         describes: None,
+        input: None,
     })
 }
 
@@ -364,6 +429,7 @@ pub fn generate_app(profile: &AppProfile) -> Vec<ToolSpec> {
                 tab: None,
                 effect: None,
                 describes: None,
+                input: None,
             });
         }
         for a in &view.actions {
@@ -381,13 +447,7 @@ fn app_act_tool(profile: &AppProfile, view: &View, a: &crate::app::AxAction) -> 
     };
     let mut schema = if mutating { grant_schema() } else { no_args_schema() };
     if a.perform == AxPerform::SetValue {
-        schema["properties"]["value"] = serde_json::json!({
-            "type": "string",
-            "description": "The text to set on the element"
-        });
-        let mut required = schema["required"].as_array().cloned().unwrap_or_default();
-        required.push(serde_json::json!("value"));
-        schema["required"] = serde_json::Value::Array(required);
+        with_value(&mut schema, "The text to set on the element");
     }
     ToolSpec {
         name: tool_name(&profile.id, &view.name, "act", &a.name),
@@ -415,6 +475,7 @@ fn app_act_tool(profile: &AppProfile, view: &View, a: &crate::app::AxAction) -> 
         tab: None,
         effect: Some(a.effect),
         describes: Some(a.describes.clone()),
+        input: None,
     }
 }
 
@@ -433,6 +494,7 @@ fn app_goto_tool(profile: &AppProfile, view: &View) -> ToolSpec {
         tab: None,
         effect: None,
         describes: None,
+        input: None,
     }
 }
 
@@ -498,6 +560,13 @@ fn params_schema(params: &[String]) -> serde_json::Value {
     })
 }
 
+fn with_value(schema: &mut serde_json::Value, description: &str) {
+    schema["properties"]["value"] = serde_json::json!({ "type": "string", "description": description });
+    let mut required = schema["required"].as_array().cloned().unwrap_or_default();
+    required.push(serde_json::json!("value"));
+    schema["required"] = serde_json::Value::Array(required);
+}
+
 fn no_args_schema() -> serde_json::Value {
     serde_json::json!({ "type": "object", "properties": {}, "additionalProperties": false })
 }
@@ -557,6 +626,41 @@ pages:
 "#
         ))
         .expect("fixture parses")
+    }
+
+    fn chat_profile() -> ConsoleProfile {
+        ConsoleProfile::from_yaml(
+            r#"{"id":"chat","base_url":"https://chat.example.invalid","match":["chat.example.invalid"],
+               "launch":{"app":"/Applications/Chat.app","port":9333},
+               "pages":[{"name":"channel","route":"/c/{id}",
+                 "actions":[
+                   {"name":"send","locator":{"selector":"div[contenteditable]"},"effect":"mutate","describes":"posts a message as the operator","input":{"submit":"enter"}},
+                   {"name":"draft","locator":{"selector":"div[contenteditable]"},"effect":"mutate","input":{}}],
+                 "events":[{"name":"messages","within":"[role=list]","items":"[role=listitem]","contains":["ALERT"]}]}]}"#,
+        )
+        .expect("chat fixture parses")
+    }
+
+    #[test]
+    fn a_typing_action_requires_value_and_grant_and_compiles_its_submit() {
+        let t = generate(&chat_profile()).unwrap();
+        let send = t.iter().find(|x| x.name == "chat_channel_act_send").unwrap();
+        assert_eq!(send.json_schema["required"], serde_json::json!(["authorized_by", "value"]));
+        assert_eq!(send.input, Some(CompiledInput::Enter));
+        assert!(send.program.js().unwrap().contains("focus()"));
+        let draft = t.iter().find(|x| x.name == "chat_channel_act_draft").unwrap();
+        assert_eq!(draft.input, Some(CompiledInput::None));
+    }
+
+    #[test]
+    fn event_streams_and_launch_reach_the_bundle() {
+        let b = Bundle::compile(&[Profile::Browser(chat_profile())]).unwrap();
+        let SiteTarget::Browser { events, launch, .. } = &b.sites[0].target else { panic!("browser") };
+        assert_eq!(events.len(), 1);
+        assert!(events[0].install_js.contains("MutationObserver"));
+        assert!(events[0].install_js.contains("\"alert\""), "contains filter is lower-cased");
+        assert!(events[0].drain_js.contains("splice(0)"));
+        assert_eq!(launch.as_ref().unwrap().port, 9333);
     }
 
     #[test]

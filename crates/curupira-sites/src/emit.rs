@@ -248,6 +248,63 @@ pub fn emit_click(loc: &Locator) -> Result<String> {
     Ok(format!("(e => {{ if (!e) return false; e.click(); return true; }})({one})"))
 }
 
+/// JS expression that focuses the located text box and places the caret at
+/// its end, resolving to whether it was found. The text itself is then sent
+/// as trusted CDP input, which rich editors accept and synthetic events do not.
+pub fn emit_focus(loc: &Locator) -> Result<String> {
+    let one = emit_locate(loc)?;
+    Ok(format!(
+        "(e => {{ if (!e) return false; e.focus(); \
+         if (e.isContentEditable) {{ const r = document.createRange(); r.selectNodeContents(e); r.collapse(false); \
+         const s = getSelection(); s.removeAllRanges(); s.addRange(r); }} return document.activeElement === e || e.contains(document.activeElement); }})({one})"
+    ))
+}
+
+/// Window key that holds every stream's buffer.
+pub const EVENTS_KEY: &str = "__curupiraEvents";
+
+/// Most events a stream buffers between drains; older ones are dropped and
+/// counted so a slow reader learns it missed some.
+pub const EVENTS_CAP: usize = 500;
+
+/// JS expression that installs (idempotently) an observer for one stream and
+/// resolves to `{installed, already, within}`.
+pub fn emit_watch_install(s: &crate::profile::EventStream) -> Result<String> {
+    let name = js(&s.name)?;
+    let within = js(&s.within)?;
+    let items = js(&s.items)?;
+    let contains = js(&s.contains.iter().map(|c| c.to_lowercase()).collect::<Vec<_>>())?;
+    let key = EVENTS_KEY;
+    let cap = EVENTS_CAP;
+    Ok(format!(
+        "(() => {{ const W = window.{key} = window.{key} || {{}}; const n = {name};\n\
+         if (W[n] && W[n].observer) return {{ installed: true, already: true, within: true }};\n\
+         const root = document.querySelector({within}); if (!root) return {{ installed: false, already: false, within: false }};\n\
+         const want = {contains}; const st = W[n] = {{ buf: [], dropped: 0, seen: new WeakSet(), observer: null }};\n\
+         const take = el => {{ if (st.seen.has(el)) return; st.seen.add(el);\n\
+           const text = (el.innerText || el.textContent || '').trim(); if (!text) return;\n\
+           const low = text.toLowerCase(); if (want.length && !want.some(w => low.includes(w))) return;\n\
+           st.buf.push({{ at: Date.now(), text: text.slice(0, 4000) }}); if (st.buf.length > {cap}) {{ st.buf.shift(); st.dropped++; }} }};\n\
+         root.querySelectorAll({items}).forEach(el => st.seen.add(el));\n\
+         st.observer = new MutationObserver(ms => {{ for (const m of ms) for (const node of m.addedNodes) {{\n\
+           if (!(node instanceof Element)) continue; if (node.matches({items})) take(node); node.querySelectorAll({items}).forEach(take); }} }});\n\
+         st.observer.observe(root, {{ childList: true, subtree: true }});\n\
+         return {{ installed: true, already: false, within: true }}; }})()"
+    ))
+}
+
+/// JS expression that returns and clears one stream's buffer:
+/// `{watching, events, dropped}`. `watching: false` means no observer is
+/// installed (the page navigated or was never watched), which is not "no events".
+pub fn emit_watch_drain(name: &str) -> Result<String> {
+    let name = js(name)?;
+    let key = EVENTS_KEY;
+    Ok(format!(
+        "(() => {{ const st = (window.{key} || {{}})[{name}]; if (!st || !st.observer) return {{ watching: false, events: [], dropped: 0 }};\n\
+         const events = st.buf.splice(0); const dropped = st.dropped; st.dropped = 0; return {{ watching: true, events, dropped }}; }})()"
+    ))
+}
+
 /// JS expression that activates an in-page tab by visible text.
 pub fn emit_activate_tab(text: &str) -> Result<String> {
     emit_click(&Locator::ButtonText(text.to_string()))

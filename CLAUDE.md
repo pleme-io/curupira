@@ -18,6 +18,9 @@ the pipeline is shared. Map:
 | `crates/curupira-sites/fixtures/judge-cases.json` | holds the Rust and TS judges to the same verdicts |
 | `crates/curupira-stack` | layered stack: `/etc/curupira-sites/curupira-sites.yaml` < `~/.config/curupira-sites/curupira-sites.yaml` < every `.curupira-sites.yaml` / `.curupira-sites-*.yaml` from `/` down to the cwd (shikumi hierarchical discovery, nearest wins per key); sites and workspaces are maps so layers add, override or `enabled: false` single entries |
 | `site_workspace_list` / `site_workspace_open` | open a workspace's tabs in the connected headed Chrome; the server builds the stack at start (`CURUPIRA_STACK_BIN`), falling back to the static bundle when no layer exists or `CURUPIRA_SITES_SOURCE=bundle` |
+| typing actions (`Action.input`) | `locator` is the text box; `site_act` with `value` focuses it, sends `value` as trusted `Input.insertText`, then submits by Enter, a click, or not at all; typing into an app is `effect: mutate` and needs `authorized_by` like any write |
+| `site_watch` / `site_events` | a page's `events` streams: a MutationObserver buffers new `items` inside `within` (filtered by `contains`) until drained; `watching: false` means no observer, never "no events" |
+| `site_app_launch` | a browser profile with `launch: {app, port}` is an Electron app: opened with `--remote-debugging-port` and connected, then driven by the same tools |
 | `sites/` | public examples only (`example.invalid`, stock Apple apps) |
 
 A new target kind is a backend (locator vocabulary + executor) behind the same

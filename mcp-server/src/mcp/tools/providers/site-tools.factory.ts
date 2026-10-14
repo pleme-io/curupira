@@ -50,6 +50,19 @@ interface ToolSpec {
   tab?: string;
   effect?: 'observe' | 'mutate';
   describes?: string;
+  input?: { submit: 'none' } | { submit: 'enter' } | { submit: 'click'; js: string };
+}
+
+interface CompiledEvent {
+  page: string;
+  name: string;
+  install_js: string;
+  drain_js: string;
+}
+
+interface AppLaunch {
+  app: string;
+  port: number;
 }
 
 // The compiled qualifying suite the Rust engine bakes into the bundle. The JUDGE
@@ -86,6 +99,8 @@ interface SiteBundle {
   bundle_id?: string;
   tools: ToolSpec[];
   tests?: CompiledTest[];
+  events?: CompiledEvent[];
+  launch?: AppLaunch;
 }
 
 interface WorkspaceTab {
@@ -574,7 +589,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
             },
             value: {
               type: 'string',
-              description: 'macos-app set-value controls only: the text to set',
+              description: 'Typing controls (and macos-app set-value controls): the text to type or set',
             },
           },
           required: ['site', 'page', 'control'],
@@ -583,6 +598,9 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         handler: async (args: Record<string, unknown>) => this.driveLeaf('site_act', 'control', args, actSites, hasControls),
       });
     }
+
+    this.registerEventTools();
+    this.registerLaunchTool();
 
     const testSites = this.entries.filter((e) => (e.site.tests ?? []).length > 0);
     if (testSites.length > 0) {
@@ -975,6 +993,156 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     }
   }
 
+  private resolveStream(args: Record<string, unknown>, needName: boolean): Resolved<{ site: SiteBundle; streams: CompiledEvent[] }> {
+    const watchable = this.entries.filter((e) => (e.site.events ?? []).length > 0);
+    const s = this.resolveSite(args?.site, watchable);
+    if (!s.ok) return s;
+    const all = s.value.site.events ?? [];
+    const want = typeof args?.stream === 'string' ? args.stream : '';
+    if (!want) {
+      return needName
+        ? { ok: false, error: `missing 'stream'; legal streams on '${s.value.site.id}': ${legal(all.map((e) => e.name))}` }
+        : { ok: true, value: { site: s.value.site, streams: all } };
+    }
+    const hit = all.filter((e) => slug(e.name) === slug(want));
+    return hit.length
+      ? { ok: true, value: { site: s.value.site, streams: hit } }
+      : { ok: false, error: `unknown stream '${want}' on '${s.value.site.id}'; legal streams: ${legal(all.map((e) => e.name))}` };
+  }
+
+  private async onSiteTab(site: SiteBundle): Promise<{ ok: true } | { ok: false; error: string }> {
+    const url = await this.evaluate('window.location.href');
+    if (!url.ok) return url;
+    return (site.match ?? []).some((m) => m && String(url.value ?? '').includes(m))
+      ? { ok: true }
+      : { ok: false, error: `the active tab is ${String(url.value)}, not '${site.id}'; site_goto there first` };
+  }
+
+  private registerEventTools(): void {
+    const watchable = this.entries.filter((e) => (e.site.events ?? []).length > 0);
+    if (watchable.length === 0) return;
+    const catalogue = watchable
+      .map((e) => `${e.site.id}(${(e.site.events ?? []).map((v) => `${v.name}@${v.page}`).join(', ')})`)
+      .join('; ');
+    const schema = (required: string[]) => ({
+      type: 'object',
+      properties: {
+        site: this.siteSchema(watchable),
+        stream: { type: 'string', description: 'Event stream name on that site' },
+      },
+      required,
+      additionalProperties: false,
+    });
+    this.registerTool({
+      name: 'site_watch',
+      description:
+        'Start watching a page event stream (new messages, new alerts, new rows) on the active tab. Read-only. ' +
+        `Idempotent; re-run after the page navigates. Legal values — ${catalogue}`,
+      argsSchema: PERMISSIVE,
+      jsonSchema: schema(['site', 'stream']),
+      handler: async (args: Record<string, unknown>) => {
+        const r = this.resolveStream(args, true);
+        if (!r.ok) return { success: false, error: r.error };
+        const on = await this.onSiteTab(r.value.site);
+        if (!on.ok) return { success: false, error: on.error };
+        const res = await this.evaluate(r.value.streams[0]!.install_js);
+        if (!res.ok) return { success: false, error: res.error };
+        const v = res.value as { installed?: boolean; within?: boolean } | null;
+        if (!v?.installed) {
+          return { success: false, error: `stream '${r.value.streams[0]!.name}': its container is not on this page (wrong page or not rendered yet)` };
+        }
+        return { success: true, data: { site: r.value.site.id, stream: r.value.streams[0]!.name, ...v } };
+      },
+    });
+    this.registerTool({
+      name: 'site_events',
+      description:
+        'Drain buffered events from watched streams on the active tab (all of a site\'s streams when `stream` is omitted). ' +
+        '`watching: false` means no observer is installed there, which is NOT the same as no events: call site_watch. ' +
+        `Legal values — ${catalogue}`,
+      argsSchema: PERMISSIVE,
+      jsonSchema: schema(['site']),
+      handler: async (args: Record<string, unknown>) => {
+        const r = this.resolveStream(args, false);
+        if (!r.ok) return { success: false, error: r.error };
+        const on = await this.onSiteTab(r.value.site);
+        if (!on.ok) return { success: false, error: on.error };
+        const out: Record<string, unknown> = {};
+        for (const s of r.value.streams) {
+          const res = await this.evaluate(s.drain_js);
+          out[s.name] = res.ok ? res.value : { error: res.error };
+        }
+        return { success: true, data: { site: r.value.site.id, streams: out } };
+      },
+    });
+  }
+
+  private registerLaunchTool(): void {
+    const apps = this.entries.filter((e) => e.site.launch);
+    if (apps.length === 0) return;
+    this.registerTool({
+      name: 'site_app_launch',
+      description:
+        'Launch an Electron desktop app (one Chromium the site profile names) with a DevTools port and connect curupira to it, ' +
+        'so site_goto / site_read / site_act / site_watch drive the app like a web tab. If the app is already running without ' +
+        'the port, it must be quit first. Legal values — ' +
+        apps.map((e) => `${e.site.id} (${e.site.launch!.app}, port ${e.site.launch!.port})`).join(', '),
+      argsSchema: PERMISSIVE,
+      jsonSchema: {
+        type: 'object',
+        properties: { site: this.siteSchema(apps) },
+        required: ['site'],
+        additionalProperties: false,
+      },
+      handler: async (args: Record<string, unknown>) => {
+        const s = this.resolveSite(args?.site, apps);
+        if (!s.ok) return { success: false, error: s.error };
+        const { app, port } = s.value.site.launch!;
+        let up = await waitForCDP('localhost', port, 1000);
+        if (!up) {
+          const child = spawn('open', ['-na', app, '--args', `--remote-debugging-port=${port}`], { stdio: 'ignore', detached: true });
+          child.unref();
+          up = await waitForCDP('localhost', port, 30000);
+        }
+        if (!up) {
+          return {
+            success: false,
+            error: `${app} did not open DevTools on port ${port}. If it was already running, quit it fully and retry; ` +
+              'if it still refuses, this build disables remote debugging and the site must use its web URL instead.',
+          };
+        }
+        await this.chromeService.connect({ host: 'localhost', port });
+        return { success: true, data: { site: s.value.site.id, app, port, connected: true } };
+      },
+    });
+  }
+
+  private async typeInto(spec: ToolSpec, args: Record<string, unknown>): Promise<{ ok: true } | { ok: false; error: string }> {
+    const text = typeof args?.value === 'string' ? args.value : '';
+    if (!text) return { ok: false, error: `'${spec.name}' types text: pass a non-empty 'value'` };
+    const client = this.chromeService.getCurrentClient();
+    if (!client) return { ok: false, error: NOT_CONNECTED };
+    const focused = await this.evaluate(spec.js ?? '');
+    if (!focused.ok) return focused;
+    if (focused.value !== true) return { ok: false, error: `'${spec.name}': the text box is not on the page (focus failed)` };
+    try {
+      await client.send('Input.insertText', { text });
+      const submit = spec.input!;
+      if (submit.submit === 'enter') {
+        const key = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+        await client.send('Input.dispatchKeyEvent', { type: 'keyDown', ...key, text: '\r' });
+        await client.send('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+      } else if (submit.submit === 'click') {
+        const clicked = await this.evaluate(submit.js);
+        if (!clicked.ok) return clicked;
+        if (clicked.value !== true) return { ok: false, error: `'${spec.name}': typed, but the send control is not on the page` };
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   /** Which site claims a URL. First match wins; ambiguity is reported, not resolved. */
   private sitesForUrl(url: string): SiteBundle[] {
     return this.bundle.sites.filter((s) => !isNative(s) && (s.match ?? []).some((m) => m && url.includes(m)));
@@ -1147,6 +1315,15 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         error:
           `refused: '${label}' belongs to profile '${site.id}', but the active tab is ${url}. ` +
           'Navigate there first, or call site_context to see which profile is live.',
+      };
+    }
+
+    if (spec.input) {
+      const typed = await this.typeInto(spec, args);
+      if (!typed.ok) return { success: false, error: typed.error };
+      return {
+        success: true,
+        data: { site: site.id, page: spec.page, kind: spec.kind, ...extra, result: { typed: true, submitted: spec.input.submit } },
       };
     }
 
