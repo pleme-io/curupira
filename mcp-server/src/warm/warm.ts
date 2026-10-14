@@ -122,18 +122,22 @@ export function inWindow(now: Date, hours?: [number, number], days?: number[]): 
   return true;
 }
 
+export function presenceKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.host}/${u.pathname.split('/')[1]}`;
+  } catch {
+    return '';
+  }
+}
+
 export function missingTabs(tabs: WarmTab[], open: WarmTarget[]): WarmTab[] {
-  const hostsOpen = open.filter((t) => t.type === 'page').map((t) => t.url);
+  const seen = new Set(open.filter((t) => t.type === 'page').map((t) => presenceKey(t.url)));
   return tabs.filter((tab) => {
-    const want = new URL(tab.url);
-    return !hostsOpen.some((u) => {
-      try {
-        const o = new URL(u);
-        return o.host === want.host && o.pathname.split('/')[1] === want.pathname.split('/')[1];
-      } catch {
-        return false;
-      }
-    });
+    const key = presenceKey(tab.url);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }
 

@@ -35,6 +35,15 @@ describe('warm', () => {
     expect(missingTabs(tabs, open).map((t) => t.key)).toEqual(['sp']);
   });
 
+  it('opens one tab per host and first path segment across workspaces', () => {
+    const tabs = [
+      { key: 'a', url: 'https://logs.example.invalid/en-US/app/search/x' },
+      { key: 'b', url: 'https://logs.example.invalid/en-US/app/search/y' },
+      { key: 'c', url: 'https://app.example.invalid/dashboard/1' },
+    ];
+    expect(missingTabs(tabs, []).map((t) => t.key)).toEqual(['a', 'c']);
+  });
+
   it('persists the posture and does nothing when it is off', async () => {
     process.env.CURUPIRA_POSTURE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'posture-')), 'posture');
     expect(currentPosture()).toBe('off');
