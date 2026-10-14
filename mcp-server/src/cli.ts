@@ -463,6 +463,39 @@ program
   })
 
 program
+  .command('reconcile')
+  .description("Converge the current posture's eventual state (enforced tabs, questioned strays) every tick_seconds; --once runs one tick")
+  .option('--once', 'Run one tick and print its report')
+  .option('--port <port>', 'DevTools port of the workspace Chrome', process.env.CURUPIRA_WORKSPACE_CHROME_PORT || '9222')
+  .action(async (options) => {
+    const { reconcileOnce, startReconciler } = await import('./reconcile/reconcile.js')
+    if (options.once) {
+      process.stdout.write(JSON.stringify(await reconcileOnce({ port: Number(options.port) }), null, 2) + '\n')
+      return
+    }
+    startReconciler({ port: Number(options.port) }, (r) => process.stdout.write(JSON.stringify({ at: new Date(r.at).toISOString(), posture: r.posture, state: r.state, reason: r.reason, missing: r.missing, opened: r.opened, questioned: r.newlyQuestioned, closed: r.closed, errors: r.errors }) + '\n'))
+  })
+
+program
+  .command('strays')
+  .description('List tabs open outside the posture, or resolve one: adopt (stop asking), dismiss (keep quiet while open), close')
+  .argument('[host]', 'The stray to resolve')
+  .argument('[action]', 'adopt | dismiss | close')
+  .option('--port <port>', 'DevTools port of the workspace Chrome', process.env.CURUPIRA_WORKSPACE_CHROME_PORT || '9222')
+  .action(async (host?: string, action?: string, options?: { port: string }) => {
+    const { readStrays, resolveStray } = await import('./reconcile/reconcile.js')
+    if (!host) {
+      process.stdout.write(JSON.stringify(readStrays(), null, 2) + '\n')
+      return
+    }
+    if (action !== 'adopt' && action !== 'dismiss' && action !== 'close') {
+      process.stderr.write("action must be one of: adopt, dismiss, close\n")
+      process.exit(2)
+    }
+    process.stdout.write(JSON.stringify(await resolveStray(host, action, Number(options?.port || '9222'))) + '\n')
+  })
+
+program
   .command('warm')
   .description('Apply the current posture once: open its missing workspace tabs, refill form sign-ins, notify on the rest')
   .option('--posture <name>', 'Use this posture for this run instead of the saved one')

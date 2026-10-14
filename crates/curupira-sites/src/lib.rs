@@ -38,5 +38,5 @@ pub mod toolgen;
 pub use error::{Result, SitesError};
 pub use profile::{Authorization, ConsoleProfile, Effect, Profile, TargetKind};
 pub use terminal::{CmdOut, DRIVER_JS, TerminalConfig};
-pub use toolgen::{Bundle, FormSignin, Posture, SiteBundle, StackProvenance, ToolSpec, Workspace, WorkspaceTab};
+pub use toolgen::{Bundle, FormSignin, Posture, Reconcile, StrayMode, TabMode, SiteBundle, StackProvenance, ToolSpec, Workspace, WorkspaceTab};
 pub use shell::{Shaped, Structured, structure, prefer_structured};

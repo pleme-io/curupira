@@ -235,6 +235,37 @@ pub struct Posture {
     pub signin: Vec<FormSignin>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reconcile: Option<Reconcile>,
+}
+
+/// The eventual state a posture holds while curupira runs, converged every
+/// `tick_seconds`: the workspace tabs (`enforce` reopens a missing one,
+/// `observe` only reports it) and any other tab (`question` asks once,
+/// `close` closes it, `ignore` leaves it), except URLs matching `allow`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reconcile {
+    pub tick_seconds: u32,
+    pub tabs: TabMode,
+    pub strays: StrayMode,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allow: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TabMode {
+    Enforce,
+    Observe,
+    Off,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StrayMode {
+    Question,
+    Close,
+    Ignore,
 }
 
 /// Refill a username/password form on any tab whose URL contains `match`,

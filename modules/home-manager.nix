@@ -231,6 +231,15 @@ in
       enable = lib.mkEnableOption "a launchd agent that runs `curupira-mcp warm` every 5 minutes; each posture's interval_minutes paces the real work";
     };
 
+    reconcile = {
+      enable = lib.mkEnableOption ''
+        a kept-alive launchd agent running `curupira-mcp reconcile`: every posture
+        `reconcile.tick_seconds` it converges the selected posture's eventual state
+        (workspace tabs enforced or observed, tabs outside it questioned, closed or
+        ignored, then the posture's warm duties). A running MCP server reconciles
+        too; a lease keeps one of them acting at a time'';
+    };
+
     cdpTimeoutMs = lib.mkOption {
       type = lib.types.int;
       default = 60000;
@@ -263,6 +272,18 @@ in
       "curupira/sites.bundle.json".source = cfg.bundle;
     } // lib.optionalAttrs (cfg.stack.enable && (hasProfiles || cfg.stack.workspaces != { } || cfg.stack.postures != { })) {
       "curupira-sites/curupira-sites.yaml".source = userLayer;
+    };
+
+    launchd.agents.curupira-reconcile = lib.mkIf (cfg.reconcile.enable && pkgs.stdenv.isDarwin) {
+      enable = true;
+      config = {
+        ProgramArguments = [ "${cfg.package}/bin/curupira-mcp" "reconcile" ];
+        KeepAlive = true;
+        RunAtLoad = true;
+        ProcessType = "Background";
+        StandardOutPath = "${config.home.homeDirectory}/Library/Logs/curupira-reconcile.log";
+        StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/curupira-reconcile.log";
+      };
     };
 
     launchd.agents.curupira-warm = lib.mkIf (cfg.warm.enable && pkgs.stdenv.isDarwin) {

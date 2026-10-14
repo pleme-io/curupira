@@ -136,6 +136,13 @@ export class CurupiraServer {
 
       // Setup graceful shutdown
       this.setupShutdownHandlers();
+
+      if (process.env.CURUPIRA_RECONCILE !== 'off') {
+        const { startReconciler } = await import('../reconcile/reconcile.js');
+        startReconciler({ port: Number(process.env.CURUPIRA_WORKSPACE_CHROME_PORT || '9222') }, (r) =>
+          this.logger.info({ posture: r.posture, state: r.state, missing: r.missing.length, opened: r.opened, questioned: r.newlyQuestioned, reason: r.reason }, 'posture reconcile'),
+        );
+      }
       
     } catch (error) {
       this.logger.error({ error }, 'Failed to start server');

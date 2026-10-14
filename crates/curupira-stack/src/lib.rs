@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use curupira_sites::{Bundle, FormSignin, Posture, Profile, StackProvenance, Workspace, WorkspaceTab};
+use curupira_sites::{Bundle, FormSignin, Posture, Profile, Reconcile, StrayMode, TabMode, StackProvenance, Workspace, WorkspaceTab};
 use figment::value::magic::RelativePathBuf;
 use serde::Deserialize;
 
@@ -36,6 +36,42 @@ pub struct PostureEntry {
     pub signin: BTreeMap<String, SigninEntry>,
     #[serde(default)]
     pub notify: Option<String>,
+    #[serde(default)]
+    pub reconcile: Option<ReconcileEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ReconcileEntry {
+    #[serde(default = "on")]
+    pub enabled: bool,
+    #[serde(default = "sixty")]
+    pub tick_seconds: u32,
+    #[serde(default = "enforce")]
+    pub tabs: TabMode,
+    #[serde(default = "question")]
+    pub strays: StrayMode,
+    #[serde(default)]
+    pub allow: BTreeMap<String, AllowEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AllowEntry {
+    #[serde(default = "on")]
+    pub enabled: bool,
+    #[serde(rename = "match")]
+    pub match_url: String,
+}
+
+const fn sixty() -> u32 {
+    60
+}
+
+const fn enforce() -> TabMode {
+    TabMode::Enforce
+}
+
+const fn question() -> StrayMode {
+    StrayMode::Question
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -193,6 +229,12 @@ pub fn compile(stack: &Stack, layers: &[PathBuf]) -> Bundle {
                     })
                     .collect(),
                 notify: p.notify.clone(),
+                reconcile: p.reconcile.as_ref().filter(|r| r.enabled).map(|r| Reconcile {
+                    tick_seconds: r.tick_seconds,
+                    tabs: r.tabs,
+                    strays: r.strays,
+                    allow: r.allow.values().filter(|a| a.enabled).map(|a| a.match_url.clone()).collect(),
+                }),
             }),
             Err(e) => refused.push(format!("posture '{name}': {e}")),
         }
@@ -216,6 +258,9 @@ fn check_posture(name: &str, p: &PostureEntry, workspaces: &[&str]) -> Result<()
     }
     if let Some(d) = p.days.iter().find(|d| **d > 6) {
         return Err(format!("day {d} is not 0 (Sunday) to 6 (Saturday)"));
+    }
+    if let Some(r) = p.reconcile.as_ref().filter(|r| r.enabled && r.tick_seconds < 10) {
+        return Err(format!("reconcile.tick_seconds {} must be at least 10", r.tick_seconds));
     }
     if p.interval_minutes == 0 {
         return Err(format!("{name}: interval_minutes must be at least 1"));
@@ -292,7 +337,7 @@ mod tests {
         let b = root.path().join("b.yaml");
         fs::write(
             &a,
-            "workspaces:\n  morning: { tabs: { s: { url: https://status.example.invalid } } }\npostures:\n  warm:\n    workspaces: [morning]\n    hours: [8, 19]\n    days: [1, 2, 3, 4, 5]\n    signin:\n      logs: { match: logs.example.invalid, user_file: /u, password_file: /p }\n  broken:\n    workspaces: [nope]\n",
+            "workspaces:\n  morning: { tabs: { s: { url: https://status.example.invalid } } }\npostures:\n  warm:\n    workspaces: [morning]\n    hours: [8, 19]\n    days: [1, 2, 3, 4, 5]\n    reconcile:\n      allow:\n        newtab: { match: \"chrome://\" }\n        gone: { enabled: false, match: x }\n    signin:\n      logs: { match: logs.example.invalid, user_file: /u, password_file: /p }\n  broken:\n    workspaces: [nope]\n",
         )
         .unwrap();
         fs::write(&b, "postures:\n  warm:\n    interval_minutes: 15\n    signin:\n      logs: { enabled: false, match: x, user_file: x, password_file: x }\n").unwrap();
@@ -305,6 +350,7 @@ mod tests {
         assert_eq!(warm.hours, Some([8, 19]));
         assert_eq!(warm.interval_minutes, 15);
         assert!(warm.signin.is_empty(), "the higher layer configured the sign-in rule off");
+        assert_eq!(warm.reconcile.as_ref().map(|r| (r.tabs, r.strays, r.tick_seconds, r.allow.clone())), Some((TabMode::Enforce, StrayMode::Question, 60, vec!["chrome://".to_string()])));
         let refused = &bundle.stack.as_ref().unwrap().refused;
         assert!(refused.iter().any(|r| r.contains("posture 'broken'") && r.contains("nope")), "{refused:?}");
     }

@@ -756,6 +756,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         },
       }),
     });
+    this.registerPostureTools();
     if (workspaces.length === 0) return;
     this.registerTool({
       name: 'site_workspace_open',
@@ -774,6 +775,58 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         required: ['workspace'],
       },
       handler: async (args: Record<string, unknown>) => this.openWorkspace(args, workspaces),
+    });
+  }
+
+  private registerPostureTools(): void {
+    const postures = (this.bundle as { postures?: Array<{ name: string }> }).postures ?? [];
+    if (postures.length === 0) return;
+    const port = Number(process.env.CURUPIRA_WORKSPACE_CHROME_PORT || '9222');
+    this.registerTool({
+      name: 'site_posture',
+      description:
+        'Show or set the operating posture. The posture is an eventual state curupira converges while it runs: its workspace tabs ' +
+        'kept open (enforce) or reported (observe), and tabs outside it questioned, closed or ignored. Returns the last reconcile ' +
+        `report and the open strays. Legal: ${legal(['off', ...postures.map((p) => p.name)])}.`,
+      argsSchema: PERMISSIVE,
+      jsonSchema: { type: 'object', properties: { name: { type: 'string', enum: ['off', ...postures.map((p) => p.name)] } } },
+      handler: async (args: Record<string, unknown>) => {
+        const { currentPosture, setPosture } = await import('../../../warm/warm.js');
+        const { lastReport, readStrays, reconcileOnce } = await import('../../../reconcile/reconcile.js');
+        if (typeof args.name === 'string') {
+          setPosture(args.name);
+          await reconcileOnce({ port });
+        }
+        return { success: true, data: { posture: currentPosture(), last: lastReport(), strays: readStrays() } };
+      },
+    });
+    this.registerTool({
+      name: 'site_posture_stray',
+      description:
+        'Resolve a tab open outside the posture (keyed by host, from site_posture strays): adopt stops asking about it, dismiss keeps ' +
+        'it quiet while open, close closes its tabs (effect: mutate, needs authorized_by naming who said so).',
+      argsSchema: PERMISSIVE,
+      jsonSchema: {
+        type: 'object',
+        properties: {
+          host: { type: 'string' },
+          action: { type: 'string', enum: ['adopt', 'dismiss', 'close'] },
+          authorized_by: { type: 'string' },
+        },
+        required: ['host', 'action'],
+      },
+      handler: async (args: Record<string, unknown>) => {
+        const action = args.action as 'adopt' | 'dismiss' | 'close';
+        if (action === 'close' && !(typeof args.authorized_by === 'string' && args.authorized_by.trim())) {
+          return { success: false, error: 'close is effect: mutate; pass authorized_by naming who said so' };
+        }
+        const { resolveStray } = await import('../../../reconcile/reconcile.js');
+        try {
+          return { success: true, data: await resolveStray(String(args.host), action, port) };
+        } catch (err) {
+          return { success: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      },
     });
   }
 

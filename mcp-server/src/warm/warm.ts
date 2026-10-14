@@ -32,6 +32,14 @@ export interface Posture {
   interval_minutes: number;
   signin?: FormSignin[];
   notify?: string;
+  reconcile?: Reconcile;
+}
+
+export interface Reconcile {
+  tick_seconds: number;
+  tabs: 'enforce' | 'observe' | 'off';
+  strays: 'question' | 'close' | 'ignore';
+  allow?: string[];
 }
 
 export interface WarmOptions {
@@ -44,7 +52,7 @@ export interface WarmOptions {
   force?: boolean;
 }
 
-interface StackBundle {
+export interface StackBundle {
   workspaces?: WarmWorkspace[];
   postures?: Posture[];
 }
@@ -142,7 +150,7 @@ export function missingTabs(tabs: WarmTab[], open: WarmTarget[]): WarmTab[] {
 }
 
 
-async function cdp(wsUrl: string, method: string, params: Record<string, unknown>, timeoutMs = 5000): Promise<any> {
+export async function cdp(wsUrl: string, method: string, params: Record<string, unknown>, timeoutMs = 5000): Promise<any> {
   const ws = new WebSocket(wsUrl);
   await new Promise<void>((resolve, reject) => {
     ws.onopen = () => resolve();
@@ -202,28 +210,15 @@ export async function warm(opts: WarmOptions): Promise<WarmReport> {
   fs.mkdirSync(path.dirname(stamp), { recursive: true });
   fs.writeFileSync(stamp, String(now.getTime()));
   report.ran = true;
-  const found = (bundle.workspaces ?? []).filter((w) => posture.workspaces.includes(w.name));
-  const tabs = found.flatMap((w) => w.tabs);
+  const tabs = postureTabs(bundle, posture);
   const signin = posture.signin ?? [];
   const base = `http://127.0.0.1:${opts.port}`;
 
-  let up = await fetch(`${base}/json/version`).then((r) => r.ok).catch(() => false);
-  if (!up) {
-    const bin = opts.chromeBin || findChromeBinary();
-    if (!bin) {
-      report.errors.push('no Chrome binary to launch');
-      return report;
-    }
-    spawn(bin, [`--remote-debugging-port=${opts.port}`, `--user-data-dir=${opts.profile}`, '--no-first-run', '--no-default-browser-check'], {
-      detached: true,
-      stdio: 'ignore',
-    }).unref();
-    report.launched = true;
-    up = await waitForCDP('127.0.0.1', opts.port, 30000);
-    if (!up) {
-      report.errors.push(`Chrome on port ${opts.port} never answered`);
-      return report;
-    }
+  const chrome = await ensureChrome(opts.port, opts.profile, opts.chromeBin);
+  report.launched = chrome.launched;
+  if (chrome.error) {
+    report.errors.push(chrome.error);
+    return report;
   }
 
   const version = (await (await fetch(`${base}/json/version`)).json()) as { webSocketDebuggerUrl: string };
@@ -276,6 +271,23 @@ export async function warm(opts: WarmOptions): Promise<WarmReport> {
     }
   }
   return report;
+}
+
+export async function ensureChrome(port: number, profile: string, chromeBin?: string): Promise<{ launched: boolean; error?: string }> {
+  const base = `http://127.0.0.1:${port}`;
+  if (await fetch(`${base}/json/version`).then((r) => r.ok).catch(() => false)) return { launched: false };
+  const bin = chromeBin || findChromeBinary();
+  if (!bin) return { launched: false, error: 'no Chrome binary to launch' };
+  spawn(bin, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check'], {
+    detached: true,
+    stdio: 'ignore',
+  }).unref();
+  if (!(await waitForCDP('127.0.0.1', port, 30000))) return { launched: true, error: `Chrome on port ${port} never answered` };
+  return { launched: true };
+}
+
+export function postureTabs(bundle: StackBundle, posture: Posture): WarmTab[] {
+  return (bundle.workspaces ?? []).filter((w) => posture.workspaces.includes(w.name)).flatMap((w) => w.tabs);
 }
 
 export function defaultProfile(): string {
