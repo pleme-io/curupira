@@ -45,6 +45,13 @@ let
   '';
 
   hasProfiles = cfg.sites != { } || cfg.siteFiles != { };
+
+  userLayer = pkgs.writeText "curupira-sites.yaml" (builtins.toJSON {
+    sites =
+      (lib.mapAttrs (name: value: { file = "${profileFile name value}"; }) cfg.sites)
+      // (lib.mapAttrs (_: file: { file = "${file}"; }) cfg.siteFiles);
+    inherit (cfg.stack) workspaces;
+  });
   bundlePath = if hasProfiles then builtBundle else null;
 in
 {
@@ -151,6 +158,48 @@ in
       '';
     };
 
+    stackPackage = lib.mkOption {
+      type = lib.types.package;
+      default = self.packages.${pkgs.system}.curupira-stack;
+      description = "Merges system, user and repo site layers (`curupira-stack layers|build|workspaces`).";
+    };
+
+    stack = {
+      enable = lib.mkOption {
+        type = lib.types.bool;
+        default = true;
+        description = ''
+          Render the declared sites and workspaces as the USER layer of the site
+          stack, `~/.config/curupira-sites/curupira-sites.yaml`. The server merges
+          it with `/etc/curupira-sites/curupira-sites.yaml` below and every
+          `.curupira-sites.yaml` / `.curupira-sites-*.yaml` from `/` down to its
+          working directory above, nearest repo winning per key.
+        '';
+      };
+
+      workspaces = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+        default = { };
+        example = lib.literalExpression ''
+          {
+            incident = {
+              description = "everything open during an outage";
+              tabs = {
+                logs = { site = "logs"; page = "search"; params.q = "error"; order = 10; };
+                status = { url = "https://status.example.invalid"; order = 20; };
+              };
+            };
+          }
+        '';
+        description = ''
+          Named tab sets `site_workspace_open` brings up in the connected Chrome.
+          A tab names `site` (+ optional `page`, `params`) or a plain `url`.
+          Tabs are keyed so a higher layer can add one, change one field of one,
+          or set `enabled = false` on one.
+        '';
+      };
+    };
+
     cdpTimeoutMs = lib.mkOption {
       type = lib.types.int;
       default = 60000;
@@ -166,7 +215,7 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package cfg.sitesPackage cfg.axPackage ];
+    home.packages = [ cfg.package cfg.sitesPackage cfg.axPackage cfg.stackPackage ];
 
     home.sessionVariables = {
       CURUPIRA_CDP_TIMEOUT = toString cfg.cdpTimeoutMs;
@@ -181,6 +230,8 @@ in
     # declared profiles rather than silently none.
     xdg.configFile = lib.optionalAttrs (cfg.bundle != null) {
       "curupira/sites.bundle.json".source = cfg.bundle;
+    } // lib.optionalAttrs (cfg.stack.enable && (hasProfiles || cfg.stack.workspaces != { })) {
+      "curupira-sites/curupira-sites.yaml".source = userLayer;
     };
   };
 }

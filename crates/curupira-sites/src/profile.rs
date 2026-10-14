@@ -378,8 +378,12 @@ impl Default for ConsoleProfile {
 impl ConsoleProfile {
     /// Parse a profile from YAML.
     pub fn from_yaml(text: &str) -> Result<Self> {
-        let p: Self = serde_yaml::from_str(text)
-            .map_err(|e| SitesError::Config(format!("console profile: {e}")))?;
+        let p: Self = match json_document(text) {
+            Some(doc) => serde_json::from_value(doc)
+                .map_err(|e| SitesError::Config(format!("console profile: {e}")))?,
+            None => serde_yaml::from_str(text)
+                .map_err(|e| SitesError::Config(format!("console profile: {e}")))?,
+        };
         p.validate()?;
         Ok(p)
     }
@@ -496,8 +500,32 @@ pub enum Profile {
 
 const APP_ONLY_KEYS: [&str; 2] = ["bundle_id", "views"];
 
+fn json_document(text: &str) -> Option<serde_json::Value> {
+    if !text.trim_start().starts_with('{') {
+        return None;
+    }
+    serde_json::from_str(text).ok()
+}
+
 impl Profile {
     pub fn from_yaml(text: &str) -> Result<Self> {
+        if let Some(mut doc) = json_document(text) {
+            let target = doc.as_object_mut().and_then(|m| m.remove("target"));
+            let kind = match target {
+                None => TargetKind::Browser,
+                Some(t) => serde_json::from_value(t)
+                    .map_err(|e| SitesError::Config(format!("profile target: {e}")))?,
+            };
+            return match kind {
+                TargetKind::Browser => Ok(Profile::Browser(ConsoleProfile::from_yaml(text)?)),
+                TargetKind::MacosApp => {
+                    let p: crate::app::AppProfile = serde_json::from_value(doc)
+                        .map_err(|e| SitesError::Config(format!("macos-app profile: {e}")))?;
+                    p.validate()?;
+                    Ok(Profile::MacosApp(p))
+                }
+            };
+        }
         let mut doc: serde_yaml::Value = serde_yaml::from_str(text)
             .map_err(|e| SitesError::Config(format!("profile: {e}")))?;
         let target = doc.as_mapping_mut().and_then(|m| m.remove("target"));
@@ -973,5 +1001,17 @@ pages:
     fn base_url_and_route_join_without_doubling_the_slash() {
         assert_eq!(join_url("https://h/", "/x"), "https://h/x");
         assert_eq!(join_url("https://h", "x"), "https://h/x");
+    }
+}
+
+#[cfg(test)]
+mod json_documents {
+    use super::*;
+
+    #[test]
+    fn a_json_profile_takes_externally_tagged_maps_where_yaml_takes_tags() {
+        let text = r#"{"id":"logs","base_url":"https://logs.example.invalid","match":["logs.example.invalid"],"pages":[{"name":"home","route":"/","ready":[{"url-contains":"/"}]}]}"#;
+        let Profile::Browser(p) = Profile::from_yaml(text).unwrap() else { panic!("browser") };
+        assert_eq!(p.pages[0].ready.len(), 1);
     }
 }

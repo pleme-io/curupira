@@ -51,7 +51,7 @@ const emptySchema: Schema<Record<string, unknown>> = {
 /**
  * Wait for Chrome DevTools Protocol to be available
  */
-async function waitForCDP(host: string, port: number, timeout: number = 30000): Promise<boolean> {
+export async function waitForCDP(host: string, port: number, timeout: number = 30000): Promise<boolean> {
   const startTime = Date.now();
 
   while (Date.now() - startTime < timeout) {
@@ -136,7 +136,7 @@ function detectDisplay(): string | null {
 /**
  * Find Chrome binary on the system
  */
-function findChromeBinary(): string | null {
+export function findChromeBinary(): string | null {
   const possiblePaths = [
     // Linux (NixOS, typical installs)
     '/run/current-system/sw/bin/google-chrome-stable',

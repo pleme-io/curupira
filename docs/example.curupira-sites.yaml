@@ -1,0 +1,18 @@
+# A stack layer. Copy to ~/.config/curupira-sites/curupira-sites.yaml (user),
+# /etc/curupira-sites/curupira-sites.yaml (system) or .curupira-sites.yaml in a
+# repo; relative `file` paths resolve against the layer that names them.
+sites:
+  example-console:
+    file: ../sites/example-console.yaml
+workspaces:
+  morning:
+    description: what to have open at the start of the day
+    tabs:
+      cluster:
+        site: example-console
+        page: cluster
+        params: { cluster_id: primary }
+        order: 10
+      status:
+        url: https://status.example.invalid
+        order: 20

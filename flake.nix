@@ -38,7 +38,8 @@
         meta = (mcpServerUnwrapped.meta or { }) // { mainProgram = "curupira-mcp"; };
       } ''
         makeWrapper ${mcpServerUnwrapped}/bin/curupira-mcp $out/bin/curupira-mcp \
-          --set-default CURUPIRA_AX_BIN ${curupiraAx}/bin/curupira-ax
+          --set-default CURUPIRA_AX_BIN ${curupiraAx}/bin/curupira-ax \
+          --set-default CURUPIRA_STACK_BIN ${curupiraStack}/bin/curupira-stack
       '';
 
       # The profile compiler. Built with plain rustPlatform rather than
@@ -56,52 +57,25 @@
         };
       };
 
-      # The profile compiler. Scoped to its OWN crate so it stays pure and fast:
-      # curupira-sites does not depend on akeyless-api, so buildAndTestSubdir keeps
-      # the heavy SDK out of this package's compile even though the lock vendors it.
-      curupiraSites = pkgs.rustPlatform.buildRustPackage {
-        pname = "curupira-sites";
-        version = "0.1.0";
-        src = self;
-        cargoLock = commonCargoLock;
-        buildAndTestSubdir = "crates/curupira-sites";
-        # The crate is pure and its tests need no browser or network, so they run
-        # as part of the build rather than being trusted to CI.
-        doCheck = true;
-        meta = {
-          description = "Compile web-console profiles into MCP tool definitions";
-          mainProgram = "curupira-sites";
+      workspaceCrate = pname: description:
+        pkgs.rustPlatform.buildRustPackage {
+          inherit pname;
+          version = "0.1.0";
+          src = self;
+          cargoLock = commonCargoLock;
+          buildAndTestSubdir = "crates/${pname}";
+          doCheck = true;
+          meta = { inherit description; mainProgram = pname; };
         };
-      };
 
-      curupiraAx = pkgs.rustPlatform.buildRustPackage {
-        pname = "curupira-ax";
-        version = "0.1.0";
-        src = self;
-        cargoLock = commonCargoLock;
-        buildAndTestSubdir = "crates/curupira-ax";
-        doCheck = true;
-        meta = {
-          description = "Drive native macOS app UI through the Accessibility API for curupira's macos-app site profiles";
-          mainProgram = "curupira-ax";
-        };
-      };
-
-      # The runtime akeyless API client: wraps the generated SDK behind the
-      # borrowed-ground gate. This one DOES compile akeyless-api + reqwest + tokio,
-      # so it is a heavier build than curupira-sites and is a separate package.
-      curupiraAkeyless = pkgs.rustPlatform.buildRustPackage {
-        pname = "curupira-akeyless";
-        version = "0.1.0";
-        src = self;
-        cargoLock = commonCargoLock;
-        buildAndTestSubdir = "crates/curupira-akeyless";
-        doCheck = true;
-        meta = {
-          description = "Typed, gated client for the akeyless API (wraps the generated akeyless-api SDK)";
-          mainProgram = "curupira-akeyless";
-        };
-      };
+      curupiraSites = workspaceCrate "curupira-sites"
+        "Compile web-console profiles into MCP tool definitions";
+      curupiraAx = workspaceCrate "curupira-ax"
+        "Drive native macOS app UI through the Accessibility API for curupira's macos-app site profiles";
+      curupiraAkeyless = workspaceCrate "curupira-akeyless"
+        "Typed, gated client for the akeyless API (wraps the generated akeyless-api SDK)";
+      curupiraStack = workspaceCrate "curupira-stack"
+        "Merge system, user and repo curupira site layers into one bundle";
 
       regenApp = substrateLib.mkTypescriptRegenApp {
         name = "curupira";
@@ -116,6 +90,7 @@
         curupira-sites = curupiraSites;
         curupira-ax = curupiraAx;
         curupira-akeyless = curupiraAkeyless;
+        curupira-stack = curupiraStack;
       };
 
       apps = {
@@ -124,6 +99,7 @@
         sites = { type = "app"; program = "${curupiraSites}/bin/curupira-sites"; };
         ax = { type = "app"; program = "${curupiraAx}/bin/curupira-ax"; };
         akeyless = { type = "app"; program = "${curupiraAkeyless}/bin/curupira-akeyless"; };
+        stack = { type = "app"; program = "${curupiraStack}/bin/curupira-stack"; };
         "regen:all" = { type = "app"; program = "${regenApp}"; };
       };
 
@@ -161,6 +137,7 @@
           curupira-mcp = self.packages.${final.system}.mcp-server;
           curupira-sites = self.packages.${final.system}.curupira-sites;
           curupira-ax = self.packages.${final.system}.curupira-ax;
+          curupira-stack = self.packages.${final.system}.curupira-stack;
         };
         default = curupira;
       };

@@ -24,12 +24,13 @@
  * asserted afterwards.
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { type BaseToolProviderConfig } from '../base-tool-provider.js';
+import { findChromeBinary, waitForCDP } from './chrome-launch-tools.factory.js';
 import { ChromeIndependentToolProvider } from '../chrome-independent-tool-provider.js';
 import { BaseProviderFactory, type ProviderDependencies } from '../provider.factory.js';
 import type { ILogger } from '../../../core/interfaces/logger.interface.js';
@@ -87,9 +88,28 @@ interface SiteBundle {
   tests?: CompiledTest[];
 }
 
+interface WorkspaceTab {
+  key: string;
+  url: string;
+  site?: string;
+  page?: string;
+}
+
+interface Workspace {
+  name: string;
+  description?: string;
+  tabs: WorkspaceTab[];
+}
+
 interface Bundle {
   schema_version: number;
   sites: SiteBundle[];
+  workspaces?: Workspace[];
+  stack?: { layers: string[]; refused?: string[] };
+}
+
+function stackBin(): string {
+  return process.env.CURUPIRA_STACK_BIN || 'curupira-stack';
 }
 
 const isNative = (site: SiteBundle): boolean => site.target === 'macos-app';
@@ -251,6 +271,7 @@ function defaultBundlePath(): string {
 export interface SiteToolProviderConfig extends BaseToolProviderConfig {
   bundlePath: string;
   perPageTools: boolean;
+  useStack?: boolean;
 }
 
 type Resolved<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -366,10 +387,11 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
 
   protected initializeTools(): void {
     this.bundle = { schema_version: SUPPORTED_SCHEMA, sites: [] };
-    this.loadBundle();
+    if (!this.loadStack()) this.loadBundle();
     this.entries = this.bundle.sites.map(catalogue);
     this.registerContextTools();
     this.registerGenericTools();
+    this.registerWorkspaceTools();
     if (this.config.perPageTools) {
       for (const site of this.bundle.sites) {
         for (const spec of site.tools) {
@@ -676,6 +698,132 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
    * wrong-version file is not normal and is reported, because silently
    * registering nothing would look identical to having no profiles.
    */
+  private loadStack(): boolean {
+    if (!this.config.useStack) return false;
+    const from = process.env.CURUPIRA_SITES_STACK_FROM || process.cwd();
+    try {
+      const out = execFileSync(stackBin(), ['build', '--from', from], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 15000,
+      });
+      const parsed = JSON.parse(out) as Bundle;
+      if (!READABLE_SCHEMAS.has(parsed.schema_version) || (parsed.stack?.layers ?? []).length === 0) return false;
+      this.bundle = parsed;
+      for (const r of parsed.stack?.refused ?? []) this.logger.warn({ refused: r }, 'site stack entry refused');
+      this.logger.info({ layers: parsed.stack?.layers }, 'site stack loaded');
+      return true;
+    } catch (err) {
+      this.logger.debug({ err, bin: stackBin() }, 'no site stack; falling back to the static bundle');
+      return false;
+    }
+  }
+
+  private registerWorkspaceTools(): void {
+    const workspaces = this.bundle.workspaces ?? [];
+    if (workspaces.length === 0 && !this.bundle.stack) return;
+    this.registerTool({
+      name: 'site_workspace_list',
+      description:
+        'List the site workspaces (named tab sets, e.g. an incident or start-of-day set) merged from the ' +
+        'system, user and repo stack layers, with the URL each tab opens, the layers used and any refused entries.',
+      argsSchema: PERMISSIVE,
+      jsonSchema: NO_ARGS_SCHEMA,
+      handler: async () => ({
+        success: true,
+        data: {
+          workspaces,
+          layers: this.bundle.stack?.layers ?? [],
+          refused: this.bundle.stack?.refused ?? [],
+        },
+      }),
+    });
+    if (workspaces.length === 0) return;
+    this.registerTool({
+      name: 'site_workspace_open',
+      description:
+        'Bring up every tab of a site workspace in a visible Chrome, one tab per entry: the connected Chrome if any, ' +
+        'else the Chrome on the DevTools port, else a newly launched headed Chrome with a persistent profile (SSO logins stick), so the ' +
+        'operator can watch them while site_read / site_goto drive them. Optional `only` limits it to some tab keys. ' +
+        `Legal workspaces: ${legal(workspaces.map((w) => w.name))}.`,
+      argsSchema: PERMISSIVE,
+      jsonSchema: {
+        type: 'object',
+        properties: {
+          workspace: { type: 'string', enum: workspaces.map((w) => w.name) },
+          only: { type: 'array', items: { type: 'string' } },
+        },
+        required: ['workspace'],
+      },
+      handler: async (args: Record<string, unknown>) => this.openWorkspace(args, workspaces),
+    });
+  }
+
+  private async openWorkspace(
+    args: Record<string, unknown>,
+    workspaces: Workspace[],
+  ): Promise<{ success: boolean; error?: string; data?: unknown }> {
+    const ws = workspaces.find((w) => w.name === args.workspace);
+    if (!ws) {
+      return { success: false, error: `unknown workspace '${String(args.workspace)}'; legal: ${legal(workspaces.map((w) => w.name))}` };
+    }
+    const only = Array.isArray(args.only) ? new Set(args.only.map(String)) : null;
+    const tabs = ws.tabs.filter((t) => !only || only.has(t.key));
+    const client = this.chromeService.getCurrentClient();
+    if (!client) return this.openWithoutConnection(ws.name, tabs);
+    const opened: Array<{ key: string; url: string; targetId: string }> = [];
+    const failed: Array<{ key: string; url: string; error: string }> = [];
+    for (const t of tabs) {
+      try {
+        const res = (await client.send('Target.createTarget', { url: t.url })) as { targetId?: string };
+        opened.push({ key: t.key, url: t.url, targetId: res?.targetId ?? '' });
+      } catch (err) {
+        failed.push({ key: t.key, url: t.url, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { success: failed.length === 0, data: { workspace: ws.name, opened, failed } };
+  }
+
+  private async openWithoutConnection(
+    workspace: string,
+    tabs: WorkspaceTab[],
+  ): Promise<{ success: boolean; error?: string; data?: unknown }> {
+    const port = Number(process.env.CURUPIRA_WORKSPACE_CHROME_PORT || 9222);
+    const base = `http://127.0.0.1:${port}`;
+    const running = await fetch(`${base}/json/version`).then((r) => r.ok).catch(() => false);
+    if (!running) {
+      const bin = process.env.CURUPIRA_WORKSPACE_CHROME_BIN || findChromeBinary();
+      if (!bin) return { success: false, error: 'not connected to Chrome and no Chrome binary found to launch' };
+      const profile =
+        process.env.CURUPIRA_WORKSPACE_CHROME_PROFILE || path.join(os.homedir(), '.config', 'curupira', 'chrome-workspace');
+      const child = spawn(
+        bin,
+        [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--new-window', ...tabs.map((t) => t.url)],
+        { detached: true, stdio: 'ignore' },
+      );
+      child.unref();
+      const up = await waitForCDP('127.0.0.1', port, 30000);
+      return {
+        success: up,
+        ...(up ? {} : { error: `launched ${bin} but its DevTools port ${port} never answered` }),
+        data: { workspace, launched: { bin, port, profile }, opened: tabs.map((t) => ({ key: t.key, url: t.url })), failed: [], next: 'chrome_connect to drive these tabs with site_read / site_goto' },
+      };
+    }
+    const opened: Array<{ key: string; url: string; targetId: string }> = [];
+    const failed: Array<{ key: string; url: string; error: string }> = [];
+    for (const t of tabs) {
+      try {
+        const r = await fetch(`${base}/json/new?${encodeURI(t.url)}`, { method: 'PUT' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const j = (await r.json()) as { id?: string };
+        opened.push({ key: t.key, url: t.url, targetId: j.id ?? '' });
+      } catch (err) {
+        failed.push({ key: t.key, url: t.url, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { success: failed.length === 0, data: { workspace, opened, failed } };
+  }
+
   private loadBundle(): void {
     const p = this.config.bundlePath;
     if (!fs.existsSync(p)) {
@@ -1027,6 +1175,7 @@ export class SiteToolProviderFactory extends BaseProviderFactory<SiteToolProvide
       description: 'MCP tools generated from declarative web-console profiles',
       bundlePath: deps.siteBundlePath || process.env.CURUPIRA_SITES_BUNDLE || defaultBundlePath(),
       perPageTools: deps.sitePerPageTools ?? process.env.CURUPIRA_SITES_PER_PAGE_TOOLS === 'true',
+      useStack: !deps.siteBundlePath && process.env.CURUPIRA_SITES_SOURCE !== 'bundle',
     };
     return new SiteToolProvider(
       deps.chromeService as IChromeService,

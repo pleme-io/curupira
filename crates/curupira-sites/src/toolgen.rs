@@ -157,6 +157,37 @@ pub struct Bundle {
     /// say so rather than silently mis-reading fields.
     pub schema_version: u32,
     pub sites: Vec<SiteBundle>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspaces: Vec<Workspace>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stack: Option<StackProvenance>,
+}
+
+/// A named set of tabs brought up together, resolved to absolute URLs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Workspace {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub tabs: Vec<WorkspaceTab>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceTab {
+    pub key: String,
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<String>,
+}
+
+/// Which layers built a stacked bundle, and which entries were refused.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StackProvenance {
+    pub layers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<String>,
 }
 
 /// Current bundle schema version.
@@ -195,7 +226,7 @@ impl Bundle {
                 },
             });
         }
-        let b = Self { schema_version: SCHEMA_VERSION, sites };
+        let b = Self { schema_version: SCHEMA_VERSION, sites, ..Self::default() };
         b.validate()?;
         Ok(b)
     }
