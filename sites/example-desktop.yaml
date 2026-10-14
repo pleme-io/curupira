@@ -1,0 +1,42 @@
+target: desktop
+id: example-system-settings
+app: System Settings
+bundle_id: com.apple.systempreferences
+tier: full
+why: >-
+  System Settings panes render through SwiftUI and extensions whose AX tree is
+  sparse and changes between macOS releases, so a macos-app profile has nothing
+  stable to anchor on yet; it is not a web page, so a browser profile cannot
+  reach it. Computer use drives it by what is visible until the panes are mapped.
+promote: example-system-settings-ax
+views:
+  - name: wifi
+    ready:
+      - Wi-Fi
+    reads:
+      - name: networks
+        region: right pane, the list under Known Networks
+      - name: status
+        region: right pane, top row beside the Wi-Fi switch
+    actions:
+      - name: open
+        effect: observe
+        steps:
+          - open System Settings
+          - key cmd+f
+          - type Wi-Fi
+          - key return
+          - wait 1
+          - screenshot
+  - name: search
+    ready:
+      - Search
+    actions:
+      - name: find
+        effect: observe
+        params: [query]
+        steps:
+          - key cmd+f
+          - type {query}
+          - wait 1
+          - screenshot

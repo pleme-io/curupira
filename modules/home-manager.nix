@@ -104,8 +104,13 @@ in
         A profile without `target` (or with `target = "browser"`) describes a
         web console. One with `target = "macos-app"` describes a native app by
         `bundle_id`, with `views` whose locators are Accessibility roles and
-        text matchers instead of CSS; it goes through the same compiler, the
-        same validation and the same generic site tools.
+        text matchers instead of CSS. One with `target = "desktop"` describes a
+        surface driven by the computer-use MCP (`app`, grant `tier`, a required
+        `why`, `views` of visible ready text, screen regions and ordered steps);
+        curupira plans it and computer use executes it. All three go through
+        the same compiler, the same validation and the same generic site tools,
+        and `site_route` (or `curupira-mcp route <query>`) picks the one that
+        drives a query.
 
         A profile describing a third-party console belongs in a PRIVATE
         repository — its routes and menu structure describe someone else's

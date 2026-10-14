@@ -46,6 +46,7 @@ interface ToolSpec {
   json_schema: Record<string, unknown>;
   js?: string;
   ax?: AxOp;
+  desktop?: DesktopOp;
   url_template?: string;
   tab?: string;
   effect?: 'observe' | 'mutate';
@@ -89,7 +90,14 @@ interface AxOp {
   [field: string]: unknown;
 }
 
-type TargetKind = 'browser' | 'macos-app';
+type DesktopOp =
+  | { op: 'ready'; ready: string[] }
+  | { op: 'read'; region: string }
+  | { op: 'act'; steps: string[]; params?: string[] };
+
+type TargetKind = 'browser' | 'macos-app' | 'desktop';
+
+type DesktopTier = 'read' | 'click' | 'full';
 
 interface SiteBundle {
   id: string;
@@ -97,6 +105,10 @@ interface SiteBundle {
   base_url?: string;
   match?: string[];
   bundle_id?: string;
+  app?: string;
+  tier?: DesktopTier;
+  why?: string;
+  promote?: string;
   tools: ToolSpec[];
   tests?: CompiledTest[];
   events?: CompiledEvent[];
@@ -128,6 +140,102 @@ function stackBin(): string {
 }
 
 const isNative = (site: SiteBundle): boolean => site.target === 'macos-app';
+const isDesktop = (site: SiteBundle): boolean => site.target === 'desktop';
+const claimsTabs = (site: SiteBundle): boolean => !isNative(site) && !isDesktop(site);
+
+const DESKTOP_THEN = 'verify with screenshot that every ready text is visible';
+
+export function substituteSteps(steps: string[], given: Record<string, unknown>): { ok: true; steps: string[] } | { ok: false; missing: string[] } {
+  const missing: string[] = [];
+  const out = steps.map((s) =>
+    s.replace(/\{([^{}]+)\}/g, (_m, name: string) => {
+      const v = given[name];
+      if (typeof v === 'string' && v !== '') return v;
+      if (!missing.includes(name)) missing.push(name);
+      return `{${name}}`;
+    }),
+  );
+  return missing.length > 0 ? { ok: false, missing } : { ok: true, steps: out };
+}
+
+export type RouteDriver = 'curupira-cdp' | 'curupira-ax' | 'computer-use';
+
+export interface RouteMatch {
+  site: string;
+  target: TargetKind;
+  driver: RouteDriver;
+  tools: string[];
+  pages?: string[];
+  views?: string[];
+  promote?: string;
+}
+
+export interface RouteAnswer {
+  query: string;
+  matches: RouteMatch[];
+  unmatched: boolean;
+  next?: string;
+}
+
+export const ROUTE_NEXT =
+  'map it: browser → curupira-sites draft <url>; native → curupira-ax survey <bundle_id>; else declare a desktop profile';
+
+function hostOf(u: string | undefined): string {
+  if (!u) return '';
+  try {
+    return new URL(u).host.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+export function routeQuery(bundle: Bundle, query: string): RouteAnswer {
+  const q = query.trim().toLowerCase();
+  const qHost = hostOf(q.includes('://') ? q : `https://${q}`) || q;
+  const hit = (hay: string | undefined) => !!hay && hay.toLowerCase().includes(q);
+  const scored: Array<{ score: number; m: RouteMatch }> = [];
+  for (const s of q === '' ? [] : bundle.sites) {
+    const target: TargetKind = s.target ?? 'browser';
+    const names = [...new Set(s.tools.map((t) => t.page))];
+    const hosts = [hostOf(s.base_url), ...(s.match ?? [])].filter((h) => h).map((h) => h.toLowerCase());
+    const score =
+      s.id.toLowerCase() === q || slug(s.id) === slug(q)
+        ? 3
+        : hosts.some((h) => h.includes(q) || (qHost !== '' && qHost.includes(h)))
+          ? 2
+          : hit(s.id) || hit(s.bundle_id) || hit(s.app) || names.some((n) => hit(n))
+            ? 1
+            : 0;
+    if (score === 0) continue;
+    const has = (k: ToolSpec['kind']) => s.tools.some((t) => t.kind === k);
+    const verbs = [
+      ...(has('goto') ? ['site_goto'] : []),
+      ...(has('read') ? ['site_read'] : []),
+      ...(has('act') ? ['site_act'] : []),
+    ];
+    const driver: RouteDriver = target === 'desktop' ? 'computer-use' : target === 'macos-app' ? 'curupira-ax' : 'curupira-cdp';
+    const tools =
+      driver === 'computer-use'
+        ? [...verbs, 'mcp__computer-use__request_access', 'mcp__computer-use__open_application', 'mcp__computer-use__screenshot']
+        : driver === 'curupira-ax'
+          ? [...verbs, ...((s.tests ?? []).length > 0 ? ['site_run_tests'] : [])]
+          : [...(s.launch ? ['site_app_launch'] : ['site_context']), ...verbs];
+    scored.push({
+      score,
+      m: {
+        site: s.id,
+        target,
+        driver,
+        tools,
+        ...(target === 'browser' ? { pages: names } : { views: names }),
+        ...(s.promote ? { promote: s.promote } : {}),
+      },
+    });
+  }
+  scored.sort((a, b) => b.score - a.score || a.m.site.localeCompare(b.m.site));
+  const matches = scored.map((x) => x.m);
+  return { query, matches, unmatched: matches.length === 0, ...(matches.length === 0 ? { next: ROUTE_NEXT } : {}) };
+}
 
 type AxVerb = 'goto' | 'read' | 'act' | 'run-tests';
 
@@ -281,6 +389,59 @@ const READABLE_SCHEMAS = new Set([1, SUPPORTED_SCHEMA]);
 function defaultBundlePath(): string {
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
   return path.join(base, 'curupira', 'sites.bundle.json');
+}
+
+type LoadLogger = Pick<ILogger, 'debug' | 'info' | 'warn' | 'error'>;
+
+export function readSiteStack(logger: LoadLogger): Bundle | null {
+  const from = process.env.CURUPIRA_SITES_STACK_FROM || process.cwd();
+  try {
+    const out = execFileSync(stackBin(), ['build', '--from', from], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 15000,
+    });
+    const parsed = JSON.parse(out) as Bundle;
+    if (!READABLE_SCHEMAS.has(parsed.schema_version) || (parsed.stack?.layers ?? []).length === 0) return null;
+    for (const r of parsed.stack?.refused ?? []) logger.warn({ refused: r }, 'site stack entry refused');
+    logger.info({ layers: parsed.stack?.layers }, 'site stack loaded');
+    return parsed;
+  } catch (err) {
+    logger.debug({ err, bin: stackBin() }, 'no site stack; falling back to the static bundle');
+    return null;
+  }
+}
+
+export function readSiteBundleFile(p: string, logger: LoadLogger): Bundle | null {
+  if (!fs.existsSync(p)) {
+    logger.debug({ path: p }, 'no site bundle; site plugins inactive');
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Bundle;
+    if (!READABLE_SCHEMAS.has(parsed.schema_version)) {
+      logger.error(
+        { path: p, found: parsed.schema_version, supported: [...READABLE_SCHEMAS] },
+        'site bundle schema mismatch; refusing to load it rather than mis-read its fields',
+      );
+      return null;
+    }
+    return parsed;
+  } catch (err) {
+    logger.error({ path: p, err }, 'site bundle unreadable; site plugins inactive');
+    return null;
+  }
+}
+
+export function loadSiteBundle(logger: LoadLogger): Bundle {
+  const useStack = process.env.CURUPIRA_SITES_SOURCE !== 'bundle';
+  return (
+    (useStack ? readSiteStack(logger) : null) ??
+    readSiteBundleFile(process.env.CURUPIRA_SITES_BUNDLE || defaultBundlePath(), logger) ?? {
+      schema_version: SUPPORTED_SCHEMA,
+      sites: [],
+    }
+  );
 }
 
 export interface SiteToolProviderConfig extends BaseToolProviderConfig {
@@ -591,6 +752,11 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
               type: 'string',
               description: 'Typing controls (and macos-app set-value controls): the text to type or set',
             },
+            params: {
+              type: 'object',
+              additionalProperties: { type: 'string' },
+              description: 'desktop targets only: values for the {name} placeholders in the action steps',
+            },
           },
           required: ['site', 'page', 'control'],
           additionalProperties: false,
@@ -660,6 +826,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     const page = this.resolvePage(site.value, args.page, hasGoto);
     if (!page.ok) return { success: false, error: page.error };
     const goto = page.value.goto as ToolSpec;
+    if (isDesktop(site.value.site)) return this.desktopPlan(site.value.site, goto, args, {});
     if (isNative(site.value.site)) {
       return this.axDrive(site.value.site, goto, 'goto', { launch: args.launch === true }, [], {});
     }
@@ -718,23 +885,10 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
    */
   private loadStack(): boolean {
     if (!this.config.useStack) return false;
-    const from = process.env.CURUPIRA_SITES_STACK_FROM || process.cwd();
-    try {
-      const out = execFileSync(stackBin(), ['build', '--from', from], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: 15000,
-      });
-      const parsed = JSON.parse(out) as Bundle;
-      if (!READABLE_SCHEMAS.has(parsed.schema_version) || (parsed.stack?.layers ?? []).length === 0) return false;
-      this.bundle = parsed;
-      for (const r of parsed.stack?.refused ?? []) this.logger.warn({ refused: r }, 'site stack entry refused');
-      this.logger.info({ layers: parsed.stack?.layers }, 'site stack loaded');
-      return true;
-    } catch (err) {
-      this.logger.debug({ err, bin: stackBin() }, 'no site stack; falling back to the static bundle');
-      return false;
-    }
+    const parsed = readSiteStack(this.logger);
+    if (!parsed) return false;
+    this.bundle = parsed;
+    return true;
   }
 
   private registerWorkspaceTools(): void {
@@ -896,24 +1050,8 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
   }
 
   private loadBundle(): void {
-    const p = this.config.bundlePath;
-    if (!fs.existsSync(p)) {
-      this.logger.debug({ path: p }, 'no site bundle; site plugins inactive');
-      return;
-    }
-    try {
-      const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as Bundle;
-      if (!READABLE_SCHEMAS.has(parsed.schema_version)) {
-        this.logger.error(
-          { path: p, found: parsed.schema_version, supported: [...READABLE_SCHEMAS] },
-          'site bundle schema mismatch; refusing to load it rather than mis-read its fields',
-        );
-        return;
-      }
-      this.bundle = parsed;
-    } catch (err) {
-      this.logger.error({ path: p, err }, 'site bundle unreadable; site plugins inactive');
-    }
+    const parsed = readSiteBundleFile(this.config.bundlePath, this.logger);
+    if (parsed) this.bundle = parsed;
   }
 
   /**
@@ -1198,7 +1336,56 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
 
   /** Which site claims a URL. First match wins; ambiguity is reported, not resolved. */
   private sitesForUrl(url: string): SiteBundle[] {
-    return this.bundle.sites.filter((s) => !isNative(s) && (s.match ?? []).some((m) => m && url.includes(m)));
+    return this.bundle.sites.filter((s) => claimsTabs(s) && (s.match ?? []).some((m) => m && url.includes(m)));
+  }
+
+  private desktopPlan(
+    site: SiteBundle,
+    spec: ToolSpec,
+    args: Record<string, unknown>,
+    extra: Record<string, unknown>,
+  ): { success: boolean; error?: string; data?: unknown } {
+    const op = spec.desktop;
+    if (!op || !site.app) {
+      return { success: false, error: `site '${site.id}' is a desktop target with no app or plan in the bundle` };
+    }
+    const viewReady = site.tools.find((t) => t.kind === 'goto' && t.page === spec.page)?.desktop;
+    const ready = viewReady && viewReady.op === 'ready' ? viewReady.ready : [];
+    let steps: string[];
+    if (op.op === 'ready') {
+      steps = [`open ${site.app}`, 'screenshot'];
+    } else if (op.op === 'read') {
+      steps = ['screenshot'];
+    } else {
+      const given = args.params && typeof args.params === 'object' ? (args.params as Record<string, unknown>) : {};
+      const sub = substituteSteps(op.steps, given);
+      if (!sub.ok) {
+        return {
+          success: false,
+          error:
+            `'${site.id}' ${spec.page}/${spec.name} needs params: ${sub.missing.join(', ')}; ` +
+            `pass params: {${(op.params ?? sub.missing).map((p) => `"${p}": "..."`).join(', ')}}`,
+        };
+      }
+      steps = sub.steps;
+    }
+    return {
+      success: true,
+      data: {
+        driver: 'computer-use',
+        site: site.id,
+        app: site.app,
+        ...(site.bundle_id ? { bundleId: site.bundle_id } : {}),
+        tier: site.tier ?? 'full',
+        view: spec.page,
+        kind: spec.kind,
+        ...extra,
+        ...(op.op === 'read' ? { region: op.region } : {}),
+        ready,
+        steps,
+        then: DESKTOP_THEN,
+      },
+    };
   }
 
   private registerContextTools(): void {
@@ -1211,10 +1398,12 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
       handler: async () => {
         const res = await this.evaluate('window.location.href');
         const nativeTargets = this.entries
-          .filter((e) => isNative(e.site))
+          .filter((e) => !claimsTabs(e.site))
           .map((e) => ({
             id: e.site.id,
+            target: e.site.target,
             bundleId: e.site.bundle_id ?? null,
+            ...(isDesktop(e.site) ? { app: e.site.app, tier: e.site.tier, driver: 'computer-use' } : {}),
             views: [...e.pages.values()].map(pageSummary),
             mutatingControls: [...e.pages.values()].flatMap((p) =>
               [...p.controls.entries()]
@@ -1274,6 +1463,27 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     });
 
     this.registerTool({
+      name: 'site_route',
+      description:
+        'Route a query (a site id, URL or host, app name, bundle id, or page/view name) to the profile that drives it ' +
+        'and the driver behind it: curupira-cdp (browser), curupira-ax (macos-app) or computer-use (desktop). ' +
+        'Answers the exact tools to call next; an unmatched query answers how to map it.',
+      argsSchema: PERMISSIVE,
+      jsonSchema: {
+        type: 'object',
+        properties: { query: { type: 'string', minLength: 1, description: 'What to route' } },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      handler: async (args: Record<string, unknown>) => {
+        if (typeof args.query !== 'string' || args.query.trim() === '') {
+          return { success: false, error: "missing 'query'" };
+        }
+        return { success: true, data: routeQuery(this.bundle, args.query) };
+      },
+    });
+
+    this.registerTool({
       name: 'site_list',
       description:
         'List every loaded profile — browser consoles and macos-app targets — with its pages (views), readable regions, controls and route params.',
@@ -1285,7 +1495,11 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
           sites: this.entries.map(({ site: s, pages }) => ({
             id: s.id,
             target: s.target ?? 'browser',
-            ...(isNative(s) ? { bundleId: s.bundle_id } : { baseUrl: s.base_url, match: s.match ?? [] }),
+            ...(isDesktop(s)
+              ? { app: s.app, ...(s.bundle_id ? { bundleId: s.bundle_id } : {}), tier: s.tier, why: s.why, ...(s.promote ? { promote: s.promote } : {}) }
+              : isNative(s)
+                ? { bundleId: s.bundle_id }
+                : { baseUrl: s.base_url, match: s.match ?? [] }),
             tools: s.tools.length,
             mutating: s.tools.filter((t) => t.effect === 'mutate').length,
             pages: [...pages.values()].map(pageSummary),
@@ -1345,6 +1559,8 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         'driving a mutating control under an explicit grant',
       );
     }
+
+    if (isDesktop(site)) return this.desktopPlan(site, spec, args, extra);
 
     if (isNative(site)) {
       const verb: AxVerb = spec.kind;

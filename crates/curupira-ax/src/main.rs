@@ -75,6 +75,10 @@ fn tests_from_profile(path: &PathBuf, launch: bool) -> Result<TestsRequest, Box<
             "'{}' is a browser profile; curupira-ax runs macos-app profiles",
             p.id
         ))),
+        Profile::Desktop(p) => Err(invalid(format!(
+            "'{}' is a desktop profile, planned for computer use; curupira-ax runs macos-app profiles",
+            p.id
+        ))),
     }
 }
 

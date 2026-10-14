@@ -224,20 +224,20 @@ describe('SiteToolProvider', () => {
     // correct behaviour, and it must not throw during container construction.
     const provider = makeProvider(container, path.join(os.tmpdir(), 'definitely-absent.json'));
     const names = provider.listTools().map((t: any) => t.name);
-    expect(names).toEqual(expect.arrayContaining(['site_context', 'site_list']));
-    expect(names).toHaveLength(2);
+    expect(names).toEqual(expect.arrayContaining(['site_context', 'site_list', 'site_route']));
+    expect(names).toHaveLength(3);
   });
 
   it('refuses a bundle whose schema version it does not understand', () => {
     // Reading unknown fields as if they were known is worse than not loading:
     // it produces tools that look right and behave arbitrarily.
     const provider = makeProvider(container, writeBundle(bundle({ schema_version: 99 })));
-    expect(provider.listTools()).toHaveLength(2);
+    expect(provider.listTools()).toHaveLength(3);
   });
 
   it('survives a corrupt bundle without taking the server down', () => {
     const provider = makeProvider(container, writeBundle('{ not json'));
-    expect(provider.listTools()).toHaveLength(2);
+    expect(provider.listTools()).toHaveLength(3);
   });
 
   it('reports every loaded site through site_list', async () => {
@@ -260,6 +260,7 @@ describe('SiteToolProvider', () => {
         'site_goto',
         'site_list',
         'site_read',
+        'site_route',
         'site_run_tests',
       ]);
     });
@@ -279,7 +280,7 @@ describe('SiteToolProvider', () => {
 
     it('registers only the generic tools that have a legal target', () => {
       const provider = makeProvider(container, writeBundle({ schema_version: 1, sites: [secondSite()] }));
-      expect(names(provider)).toEqual(['site_context', 'site_goto', 'site_list', 'site_read']);
+      expect(names(provider)).toEqual(['site_context', 'site_goto', 'site_list', 'site_read', 'site_route']);
     });
 
     it('lists the legal sites, pages and regions in the schema and description', () => {

@@ -496,6 +496,16 @@ program
   })
 
 program
+  .command('route')
+  .description('Route a query (site id, URL or host, app name, bundle id, page or view) to the profile, driver and tools that handle it')
+  .argument('<query...>', 'What to route')
+  .action(async (query: string[]) => {
+    const { loadSiteBundle, routeQuery } = await import('./mcp/tools/providers/site-tools.factory.js')
+    const quiet = { debug: () => {}, info: () => {}, warn: () => {}, error: (o: unknown, m?: string) => process.stderr.write(`${m ?? ''} ${JSON.stringify(o)}\n`) }
+    process.stdout.write(JSON.stringify(routeQuery(loadSiteBundle(quiet as any), query.join(' ')), null, 2) + '\n')
+  })
+
+program
   .command('warm')
   .description('Apply the current posture once: open its missing workspace tabs, refill form sign-ins, notify on the rest')
   .option('--posture <name>', 'Use this posture for this run instead of the saved one')

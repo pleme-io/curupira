@@ -23,7 +23,7 @@ fn calculator() -> FakeTree {
 fn example() -> AppProfile {
     match Profile::from_yaml(include_str!("../../../sites/example-macos-app.yaml")).unwrap() {
         Profile::MacosApp(p) => p,
-        Profile::Browser(_) => panic!("the example is a macos-app profile"),
+        _ => panic!("the example is a macos-app profile"),
     }
 }
 

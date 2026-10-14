@@ -263,6 +263,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     SiteTarget::MacosApp { bundle_id, .. } => {
                         println!("{}  (macos-app {bundle_id})", s.id);
                     }
+                    SiteTarget::Desktop { app, tier, .. } => {
+                        println!("{}  (desktop {app}, tier {})", s.id, tier.as_str());
+                    }
                 }
                 for t in &s.tools {
                     // Mutating tools are marked in the listing because this is
@@ -299,6 +302,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                         continue;
                     }
+                    SiteTarget::Desktop { .. } => continue,
                 };
                 if tests.is_empty() {
                     continue;
@@ -369,8 +373,8 @@ fn browser_only(profiles: Vec<Profile>, verb: &str) -> Vec<ConsoleProfile> {
         .into_iter()
         .filter_map(|p| match p {
             Profile::Browser(p) => Some(p),
-            Profile::MacosApp(p) => {
-                eprintln!("{verb}: skipping '{}': {verb} renders browser profiles only", p.id);
+            other => {
+                eprintln!("{verb}: skipping '{}': {verb} renders browser profiles only", other.id());
                 None
             }
         })

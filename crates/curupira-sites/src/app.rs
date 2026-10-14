@@ -415,7 +415,7 @@ tests:
     fn app(yaml: &str) -> Result<AppProfile> {
         match Profile::from_yaml(yaml)? {
             Profile::MacosApp(p) => Ok(p),
-            Profile::Browser(_) => panic!("parsed as browser"),
+            other => panic!("parsed as {:?}", other.kind()),
         }
     }
 

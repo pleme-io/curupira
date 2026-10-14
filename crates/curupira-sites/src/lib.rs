@@ -25,6 +25,7 @@
 //! planners and the honest statement of what the type does and does not prove.
 
 pub mod app;
+pub mod desktop;
 pub mod emit;
 pub mod error;
 pub mod mapper;

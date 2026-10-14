@@ -31,6 +31,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app::{AppProfile, AxOp, AxPerform, View};
+use crate::desktop::{DesktopOp, DesktopProfile};
 use crate::emit;
 use crate::error::{Result, SitesError};
 use crate::profile::{ConsoleProfile, Effect, Page, Profile};
@@ -129,6 +130,7 @@ fn compile_events(p: &ConsoleProfile) -> Result<Vec<CompiledEvent>> {
 pub enum Program {
     Js { js: String },
     Ax { ax: Box<AxOp> },
+    Desktop { desktop: DesktopOp },
 }
 
 impl Program {
@@ -136,7 +138,7 @@ impl Program {
     pub fn js(&self) -> Option<&str> {
         match self {
             Program::Js { js } => Some(js),
-            Program::Ax { .. } => None,
+            _ => None,
         }
     }
 
@@ -144,7 +146,15 @@ impl Program {
     pub fn ax(&self) -> Option<&AxOp> {
         match self {
             Program::Ax { ax } => Some(ax.as_ref()),
-            Program::Js { .. } => None,
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn desktop(&self) -> Option<&DesktopOp> {
+        match self {
+            Program::Desktop { desktop } => Some(desktop),
+            _ => None,
         }
     }
 }
@@ -177,6 +187,15 @@ pub enum SiteTarget {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tests: Vec<CompiledAppTest>,
     },
+    Desktop {
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bundle_id: Option<String>,
+        tier: crate::desktop::Tier,
+        why: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        promote: Option<String>,
+    },
 }
 
 impl SiteBundle {
@@ -184,7 +203,7 @@ impl SiteBundle {
     pub fn match_urls(&self) -> &[String] {
         match &self.target {
             SiteTarget::Browser { match_urls, .. } => match_urls,
-            SiteTarget::MacosApp { .. } => &[],
+            SiteTarget::MacosApp { .. } | SiteTarget::Desktop { .. } => &[],
         }
     }
 
@@ -193,6 +212,7 @@ impl SiteBundle {
         match &self.target {
             SiteTarget::Browser { tests, .. } => tests.len(),
             SiteTarget::MacosApp { tests, .. } => tests.len(),
+            SiteTarget::Desktop { .. } => 0,
         }
     }
 
@@ -344,6 +364,17 @@ impl Bundle {
                         tests: crate::testplan::compile_app(p),
                     },
                     tools: generate_app(p),
+                },
+                Profile::Desktop(p) => SiteBundle {
+                    id: p.id.clone(),
+                    target: SiteTarget::Desktop {
+                        app: p.app.clone(),
+                        bundle_id: p.bundle_id.clone(),
+                        tier: p.tier,
+                        why: p.why.clone(),
+                        promote: p.promote.clone(),
+                    },
+                    tools: generate_desktop(p),
                 },
             });
         }
@@ -563,6 +594,80 @@ fn app_goto_tool(profile: &AppProfile, view: &View) -> ToolSpec {
         describes: None,
         input: None,
     }
+}
+
+#[must_use]
+pub fn generate_desktop(profile: &DesktopProfile) -> Vec<ToolSpec> {
+    let base = |name: String, description: String, kind: ToolKind, view: &str, schema, op| ToolSpec {
+        name,
+        description,
+        kind,
+        page: view.to_string(),
+        json_schema: schema,
+        program: Program::Desktop { desktop: op },
+        url_template: None,
+        tab: None,
+        effect: None,
+        describes: None,
+        input: None,
+    };
+    let mut out = Vec::new();
+    for v in &profile.views {
+        out.push(base(
+            tool_name(&profile.id, &v.name, "goto", ""),
+            format!("Plan bringing {} to the '{}' view through computer use", profile.app, v.name),
+            ToolKind::Goto,
+            &v.name,
+            params_schema(&[]),
+            DesktopOp::Ready { ready: v.ready.clone() },
+        ));
+        for r in &v.reads {
+            out.push(base(
+                tool_name(&profile.id, &v.name, "read", &r.name),
+                format!("Plan reading '{}' ({}) in the '{}' view of {}", r.name, r.region, v.name, profile.app),
+                ToolKind::Read,
+                &v.name,
+                no_args_schema(),
+                DesktopOp::Read { region: r.region.clone() },
+            ));
+        }
+        for a in &v.actions {
+            let mutating = a.effect == Effect::Mutate;
+            let mut schema = if mutating { grant_schema() } else { no_args_schema() };
+            if !a.params.is_empty() {
+                schema["properties"]["params"] = serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": { "type": "string" },
+                    "description": format!("Step parameters: {}", a.params.join(", ")),
+                });
+                let mut required = schema["required"].as_array().cloned().unwrap_or_default();
+                required.push(serde_json::json!("params"));
+                schema["required"] = serde_json::Value::Array(required);
+            }
+            let mut t = base(
+                tool_name(&profile.id, &v.name, "act", &a.name),
+                if mutating {
+                    format!(
+                        "MUTATES the host: {} ('{}' in the '{}' view of {}, through computer use). Requires an explicit operator grant naming this action.",
+                        if a.describes.is_empty() { "changes state" } else { &a.describes },
+                        a.name,
+                        v.name,
+                        profile.app
+                    )
+                } else {
+                    format!("Plan '{}' in the '{}' view of {} through computer use (read-only)", a.name, v.name, profile.app)
+                },
+                ToolKind::Act,
+                &v.name,
+                schema,
+                DesktopOp::Act { steps: a.steps.clone(), params: a.params.clone() },
+            );
+            t.effect = Some(a.effect);
+            t.describes = Some(a.describes.clone());
+            out.push(t);
+        }
+    }
+    out
 }
 
 /// `{site}_{page}_{verb}[_{leaf}]`, sanitized to what an MCP tool name allows.
@@ -908,6 +1013,27 @@ pages:
         assert_eq!(j["sites"][1]["tools"][0]["ax"]["op"], "ready");
         assert_eq!(j["sites"][1]["tools"][1]["ax"]["op"], "read");
         assert_eq!(j["sites"][1]["tools"][1]["ax"]["read"]["locator"]["within"]["role"], "AXWindow");
+        let back: Bundle = serde_json::from_value(j).unwrap();
+        assert_eq!(back, b);
+    }
+
+    #[test]
+    fn a_desktop_profile_compiles_into_planned_tools_and_a_mutate_keeps_the_grant() {
+        let y = include_str!("../../../sites/example-desktop.yaml").replace(
+            "      - name: find\n        effect: observe",
+            "      - name: find\n        effect: mutate\n        describes: types into the search box",
+        );
+        let b = Bundle::compile(&[Profile::from_yaml(&y).unwrap()]).unwrap();
+        let s = &b.sites[0];
+        assert!(matches!(&s.target, SiteTarget::Desktop { app, tier, .. } if app == "System Settings" && *tier == crate::desktop::Tier::Full));
+        assert!(s.match_urls().is_empty());
+        assert!(s.tools.iter().all(|t| t.program.desktop().is_some()));
+        let find = s.tools.iter().find(|t| t.name == "example_system_settings_search_act_find").unwrap();
+        assert_eq!(find.json_schema["required"], serde_json::json!(["authorized_by", "params"]));
+        assert!(find.description.starts_with("MUTATES the host"));
+        let j = serde_json::to_value(&b).unwrap();
+        assert_eq!(j["sites"][0]["target"], "desktop");
+        assert_eq!(j["sites"][0]["tools"][0]["desktop"]["op"], "ready");
         let back: Bundle = serde_json::from_value(j).unwrap();
         assert_eq!(back, b);
     }

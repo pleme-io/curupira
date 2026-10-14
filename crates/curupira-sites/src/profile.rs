@@ -545,12 +545,14 @@ impl ConsoleProfile {
 pub enum TargetKind {
     Browser,
     MacosApp,
+    Desktop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Profile {
     Browser(ConsoleProfile),
     MacosApp(crate::app::AppProfile),
+    Desktop(crate::desktop::DesktopProfile),
 }
 
 const APP_ONLY_KEYS: [&str; 2] = ["bundle_id", "views"];
@@ -578,6 +580,12 @@ impl Profile {
                         .map_err(|e| SitesError::Config(format!("macos-app profile: {e}")))?;
                     p.validate()?;
                     Ok(Profile::MacosApp(p))
+                }
+                TargetKind::Desktop => {
+                    let p: crate::desktop::DesktopProfile = serde_json::from_value(doc)
+                        .map_err(|e| SitesError::Config(format!("desktop profile: {e}")))?;
+                    p.validate()?;
+                    Ok(Profile::Desktop(p))
                 }
             };
         }
@@ -611,6 +619,12 @@ impl Profile {
                 p.validate()?;
                 Ok(Profile::MacosApp(p))
             }
+            TargetKind::Desktop => {
+                let p: crate::desktop::DesktopProfile = serde_yaml::from_value(doc)
+                    .map_err(|e| SitesError::Config(format!("desktop profile: {e}")))?;
+                p.validate()?;
+                Ok(Profile::Desktop(p))
+            }
         }
     }
 
@@ -619,6 +633,7 @@ impl Profile {
         match self {
             Profile::Browser(p) => &p.id,
             Profile::MacosApp(p) => &p.id,
+            Profile::Desktop(p) => &p.id,
         }
     }
 
@@ -627,6 +642,7 @@ impl Profile {
         match self {
             Profile::Browser(_) => TargetKind::Browser,
             Profile::MacosApp(_) => TargetKind::MacosApp,
+            Profile::Desktop(_) => TargetKind::Desktop,
         }
     }
 
@@ -634,6 +650,7 @@ impl Profile {
         match self {
             Profile::Browser(p) => p.validate(),
             Profile::MacosApp(p) => p.validate(),
+            Profile::Desktop(p) => p.validate(),
         }
     }
 
@@ -641,7 +658,7 @@ impl Profile {
     pub fn lints(&self) -> Vec<String> {
         match self {
             Profile::Browser(p) => p.lints(),
-            Profile::MacosApp(_) => Vec::new(),
+            Profile::MacosApp(_) | Profile::Desktop(_) => Vec::new(),
         }
     }
 
@@ -650,6 +667,7 @@ impl Profile {
         match self {
             Profile::Browser(p) => p.mutating_actions(),
             Profile::MacosApp(p) => p.mutating_actions(),
+            Profile::Desktop(p) => p.mutating_actions(),
         }
     }
 }
@@ -657,6 +675,12 @@ impl Profile {
 impl From<ConsoleProfile> for Profile {
     fn from(p: ConsoleProfile) -> Self {
         Profile::Browser(p)
+    }
+}
+
+impl From<crate::desktop::DesktopProfile> for Profile {
+    fn from(p: crate::desktop::DesktopProfile) -> Self {
+        Profile::Desktop(p)
     }
 }
 
@@ -1041,7 +1065,7 @@ pages:
     #[test]
     fn an_unknown_target_names_the_legal_ones() {
         let err = Profile::from_yaml("target: android\nid: x\n").unwrap_err().to_string();
-        assert!(err.contains("browser") && err.contains("macos-app"), "{err}");
+        assert!(err.contains("browser") && err.contains("macos-app") && err.contains("desktop"), "{err}");
     }
 
     #[test]

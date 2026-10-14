@@ -7,12 +7,14 @@
 ## Site targets
 
 The site engine compiles profiles into one bundle served by generic MCP tools. A
-profile's `target` (`browser`, the default, or `macos-app`) picks the backend;
-the pipeline is shared. Map:
+profile's `target` (`browser`, the default, `macos-app`, or `desktop`) picks
+the backend; the pipeline is shared. Map:
 
 | Path | What |
 |---|---|
-| `crates/curupira-sites` | profile schema (`profile.rs` browser, `app.rs` macos-app), compiler (`toolgen.rs`), suites + the one judge (`testplan.rs`) |
+| `crates/curupira-sites` | profile schema (`profile.rs` browser, `app.rs` macos-app, `desktop.rs` desktop), compiler (`toolgen.rs`), suites + the one judge (`testplan.rs`) |
+| `target: desktop` (`desktop.rs`) | a surface driven by the computer-use MCP, which curupira plans and never executes: `app` (name as macOS shows it), optional `bundle_id`, `tier` read/click/full (the computer-use grant; steps the tier blocks are refused: read has no type/click/key, click has no type/key), required `why` (why neither browser nor macos-app covers it), `views` of `ready` visible text, `reads` as screen `region`s and `actions` as ordered `steps` (verbs key/type/click/scroll/wait/screenshot/open, `{param}` placeholders declared in `params`), optional `promote` (the profile that replaces it once mapped); `site_goto`/`site_read`/`site_act` answer `{driver:"computer-use", app, tier, view, ready, steps, then}`; a mutate act still needs `authorized_by`; carries no suite, so the judge never sees it |
+| `site_route` / `curupira-mcp route <query>` | match a query against every profile (id, base_url host and `match`, bundle_id, desktop app, page/view names; exact id > host > name) and answer `{matches:[{site, target, driver: curupira-cdp/curupira-ax/computer-use, tools, pages or views, promote?}], unmatched, next?}`; unmatched is a typed answer naming how to map the surface |
 | `crates/curupira-ax` | macos-app executor + `curupira-ax` CLI; the only unsafe code is `src/seam.rs` |
 | `mcp-server/src/mcp/tools/providers/site-tools.factory.ts` | generic tools; dispatches on `site.target` |
 | `crates/curupira-sites/fixtures/judge-cases.json` | holds the Rust and TS judges to the same verdicts |
