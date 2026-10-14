@@ -11,7 +11,17 @@ export class MockChromeClient extends EventEmitter implements IChromeClient {
   private connected = false;
   private sessions: Map<string, any> = new Map();
   private targets: any[] = [];
-  private sendMock = vi.fn();
+  private sendMock = vi.fn(MockChromeClient.defaultSend);
+
+  private static async defaultSend(method: string, _params?: any, _sessionId?: string): Promise<any> {
+    if (method === 'Runtime.evaluate') {
+      return { result: { type: 'string', value: 'mock result' } };
+    }
+    if (method === 'Page.navigate') {
+      return { frameId: 'mock-frame-id' };
+    }
+    return {};
+  }
 
   async connect(): Promise<void> {
     this.connected = true;
@@ -59,25 +69,7 @@ export class MockChromeClient extends EventEmitter implements IChromeClient {
   }
 
   async send<T = any>(method: string, params?: any, sessionId?: string): Promise<T> {
-    this.sendMock(method, params, sessionId);
-    
-    // Return mock responses based on method
-    if (method === 'Runtime.evaluate') {
-      return {
-        result: {
-          type: 'string',
-          value: 'mock result'
-        }
-      } as any;
-    }
-    
-    if (method === 'Page.navigate') {
-      return {
-        frameId: 'mock-frame-id'
-      } as any;
-    }
-
-    return {} as T;
+    return this.sendMock(method, params, sessionId);
   }
 
   getState(): string {
@@ -126,6 +118,7 @@ export class MockChromeClient extends EventEmitter implements IChromeClient {
     this.sessions.clear();
     this.targets = [];
     this.sendMock.mockReset();
+    this.sendMock.mockImplementation(MockChromeClient.defaultSend);
     this.removeAllListeners();
   }
 }

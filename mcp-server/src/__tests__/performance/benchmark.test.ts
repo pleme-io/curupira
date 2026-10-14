@@ -4,26 +4,12 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest'
-import { CurupiraServer } from '../../server.js'
-import { ChromeManager } from '../../chrome/manager.js'
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { performance } from 'perf_hooks'
-import { mockChromeClient, resetAllMocks, createCDPResponse } from '../setup.js'
-
-// Mock ChromeManager for consistent benchmarks
-vi.mock('../../chrome/manager.js', () => ({
-  ChromeManager: {
-    getInstance: vi.fn(() => ({
-      getClient: () => mockChromeClient,
-      connect: vi.fn().mockResolvedValue(undefined),
-      disconnect: vi.fn().mockResolvedValue(undefined),
-      getAllSessions: vi.fn().mockReturnValue([
-        { id: 'test-session', title: 'Test Page', url: 'https://example.com' }
-      ]),
-    })),
-  },
-}))
+import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { ChromeServiceToken } from '../../core/di/tokens.js'
+import type { MockChromeService } from '../mocks/chrome-service.mock.js'
+import type { MockChromeClient } from '../mocks/chrome-client.mock.js'
+import { connectInMemory, createAppContainer, parseToolText, type ConnectedServer } from '../helpers/mcp-harness.js'
 
 interface BenchmarkResult {
   operation: string
@@ -34,32 +20,27 @@ interface BenchmarkResult {
   memoryUsed: number
 }
 
+const evaluated = (value: unknown) => ({ result: { type: 'object', value } })
+
 describe('Performance Benchmarks', () => {
-  let server: CurupiraServer
-  let transport: InMemoryTransport
+  let harness: ConnectedServer
   let client: Client
+  let chromeService: MockChromeService
+  let chromeClient: MockChromeClient
   const results: BenchmarkResult[] = []
 
   beforeAll(async () => {
-    resetAllMocks()
-    
-    // Create server and client
-    server = new CurupiraServer()
-    transport = new InMemoryTransport()
-    await server.connectTransport(transport.serverTransport)
-
-    client = new Client({
-      name: 'benchmark-client',
-      version: '1.0.0',
-    })
-    await client.connect(transport.clientTransport)
+    const container = createAppContainer({ mockChrome: true })
+    chromeService = container.resolve(ChromeServiceToken) as unknown as MockChromeService
+    chromeService.simulateConnection()
+    chromeClient = chromeService.getMockClient()
+    harness = await connectInMemory(container, 'benchmark-client')
+    client = harness.client
   })
 
   afterAll(async () => {
-    await client?.close()
-    await server?.close()
+    await harness?.close()
 
-    // Print benchmark results
     console.log('\n=== Curupira Performance Benchmark Results ===\n')
     console.table(results.map(r => ({
       Operation: r.operation,
@@ -72,8 +53,14 @@ describe('Performance Benchmarks', () => {
   })
 
   beforeEach(() => {
-    resetAllMocks()
+    chromeClient.getSendMock().mockClear()
   })
+
+  const respondWith = (value: unknown) => {
+    chromeClient.getSendMock().mockImplementation(async (method: string) =>
+      method === 'Runtime.evaluate' ? evaluated(value) : { frameId: 'frame-1', loaderId: 'loader-1' }
+    )
+  }
 
   async function benchmark(
     name: string,
@@ -120,429 +107,121 @@ describe('Performance Benchmarks', () => {
 
   describe('Resource Operations', () => {
     it('should benchmark resources/list', async () => {
-      // Mock responses for framework detection
-      mockChromeClient.send
-        .mockResolvedValue(createCDPResponse({ result: { value: true } }))
+      const { resources } = await client.listResources()
+      expect(resources.map(r => r.uri)).toEqual(expect.arrayContaining(['browser://status', 'dom://current']))
 
-      await benchmark('resources/list', async () => {
-        const response = await client.request({
-          method: 'resources/list',
-        })
-        return response
-      })
-    })
-
-    it('should benchmark resources/read for CDP resources', async () => {
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined) // Runtime.enable
-        .mockResolvedValueOnce(
-          createCDPResponse({
-            result: {
-              value: {
-                messages: Array(50).fill({
-                  type: 'log',
-                  text: 'Test message',
-                  timestamp: Date.now(),
-                }),
-              },
-            },
-          })
-        )
-
-      await benchmark('resources/read (CDP)', async () => {
-        const response = await client.request({
-          method: 'resources/read',
-          params: {
-            uri: 'cdp://runtime/console',
-          },
-        })
-        return response
-      })
-    })
-
-    it('should benchmark resources/read for React resources', async () => {
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined) // Runtime.enable
-        .mockResolvedValueOnce(
-          createCDPResponse({
-            result: {
-              value: {
-                components: Array(20).fill({
-                  name: 'TestComponent',
-                  type: 'function',
-                  props: { id: 'test', value: 123 },
-                }),
-              },
-            },
-          })
-        )
-
-      await benchmark('resources/read (React)', async () => {
-        const response = await client.request({
-          method: 'resources/read',
-          params: {
-            uri: 'react://components',
-          },
-        })
-        return response
-      })
+      await benchmark('resources/list', () => client.listResources())
     })
   })
 
   describe('Tool Operations', () => {
     it('should benchmark tools/list', async () => {
-      await benchmark('tools/list', async () => {
-        const response = await client.request({
-          method: 'tools/list',
-        })
-        return response
-      })
+      const { tools } = await client.listTools()
+      expect(tools.length).toBeGreaterThan(100)
+
+      await benchmark('tools/list', () => client.listTools())
     })
 
-    it('should benchmark evaluate tool', async () => {
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined) // Runtime.enable
-        .mockResolvedValueOnce(
-          createCDPResponse({
-            result: {
-              type: 'string',
-              value: 'Test Result',
-            },
-          })
-        )
+    it('should benchmark cdp_evaluate', async () => {
+      respondWith('Example Domain')
 
-      await benchmark('tools/call (evaluate)', async () => {
-        const response = await client.request({
-          method: 'tools/call',
-          params: {
-            name: 'evaluate',
-            arguments: {
-              expression: 'document.title',
-            },
-          },
-        })
-        return response
-      })
+      const data = parseToolText(await client.callTool({ name: 'cdp_evaluate', arguments: { expression: 'document.title' } }))
+      expect(data.result).toBe('Example Domain')
+
+      await benchmark('cdp_evaluate', () =>
+        client.callTool({ name: 'cdp_evaluate', arguments: { expression: 'document.title' } })
+      )
     })
 
-    it('should benchmark DOM query operations', async () => {
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined) // DOM.enable
-        .mockResolvedValueOnce(undefined) // DOM.getDocument
-        .mockResolvedValueOnce(
-          createCDPResponse({
-            nodeId: 123,
-          })
-        )
+    it('should benchmark dom_query_selector', async () => {
+      respondWith([{ tagName: 'H1', textContent: 'Example Domain' }])
 
-      await benchmark('tools/call (dom_query)', async () => {
-        const response = await client.request({
-          method: 'tools/call',
-          params: {
-            name: 'dom_query_selector',
-            arguments: {
-              selector: '.test-class',
-            },
-          },
-        })
-        return response
-      })
+      const data = parseToolText(await client.callTool({ name: 'dom_query_selector', arguments: { selector: 'h1' } }))
+      expect(data.count).toBe(1)
+
+      await benchmark('dom_query_selector', () =>
+        client.callTool({ name: 'dom_query_selector', arguments: { selector: 'h1' } })
+      )
     })
 
-    it('should benchmark React component finding', async () => {
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined) // Runtime.enable
-        .mockResolvedValueOnce(
-          createCDPResponse({
-            result: {
-              value: {
-                found: true,
-                components: [
-                  { id: 'comp-1', name: 'TestComponent', props: {} },
-                ],
-              },
-            },
-          })
-        )
-
-      await benchmark('tools/call (react_find)', async () => {
-        const response = await client.request({
-          method: 'tools/call',
-          params: {
-            name: 'react_find_component',
-            arguments: {
-              componentName: 'TestComponent',
-            },
-          },
-        })
-        return response
+    it('should benchmark react_find_component', async () => {
+      respondWith({
+        query: 'TestComponent',
+        found: 1,
+        components: [{ name: 'TestComponent', path: 'App > TestComponent', props: [] }],
+        searchMethod: 'DevTools Hook',
+        suggestions: []
       })
-    })
 
-    it('should benchmark network interception setup', async () => {
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined) // Network.enable
-        .mockResolvedValueOnce(undefined) // Fetch.enable
-        .mockResolvedValueOnce(undefined) // Network.setRequestInterception
+      const data = parseToolText(await client.callTool({ name: 'react_find_component', arguments: { componentName: 'TestComponent' } }))
+      expect(data.found).toBe(1)
 
-      await benchmark('tools/call (network)', async () => {
-        const response = await client.request({
-          method: 'tools/call',
-          params: {
-            name: 'network_enable_request_interception',
-            arguments: {},
-          },
-        })
-        return response
-      })
+      await benchmark('react_find_component', () =>
+        client.callTool({ name: 'react_find_component', arguments: { componentName: 'TestComponent' } })
+      )
     })
   })
 
   describe('Complex Operations', () => {
-    it('should benchmark multiple resource reads', async () => {
-      // Setup mocks for multiple resource types
-      const setupMocks = () => {
-        mockChromeClient.send
-          // First resource
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(
-            createCDPResponse({
-              result: { value: { data: 'test1' } },
-            })
-          )
-          // Second resource
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(
-            createCDPResponse({
-              result: { value: { data: 'test2' } },
-            })
-          )
-          // Third resource
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(
-            createCDPResponse({
-              result: { value: { data: 'test3' } },
-            })
-          )
-      }
-
-      await benchmark('multiple resources', async () => {
-        setupMocks()
-        
-        const promises = [
-          client.request({
-            method: 'resources/read',
-            params: { uri: 'cdp://runtime/console' },
-          }),
-          client.request({
-            method: 'resources/read',
-            params: { uri: 'cdp://performance/metrics' },
-          }),
-          client.request({
-            method: 'resources/read',
-            params: { uri: 'cdp://network/requests' },
-          }),
-        ]
-        
-        await Promise.all(promises)
-      }, 50) // Fewer iterations for complex operations
-    })
-
     it('should benchmark tool execution sequence', async () => {
-      const setupMocks = () => {
-        mockChromeClient.send
-          // Navigate
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(undefined)
-          // Evaluate
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(
-            createCDPResponse({
-              result: { value: 'Page Title' },
-            })
-          )
-          // DOM query
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(
-            createCDPResponse({ nodeId: 123 })
-          )
-      }
+      respondWith('ok')
 
-      await benchmark('tool sequence', async () => {
-        setupMocks()
-        
-        // Navigate
-        await client.request({
-          method: 'tools/call',
-          params: {
-            name: 'navigate',
-            arguments: { url: 'https://example.com' },
-          },
-        })
-        
-        // Evaluate
-        await client.request({
-          method: 'tools/call',
-          params: {
-            name: 'evaluate',
-            arguments: { expression: 'document.title' },
-          },
-        })
-        
-        // DOM query
-        await client.request({
-          method: 'tools/call',
-          params: {
-            name: 'dom_query_selector',
-            arguments: { selector: 'body' },
-          },
-        })
+      await benchmark('navigate + evaluate + query', async () => {
+        await client.callTool({ name: 'cdp_navigate', arguments: { url: 'https://example.com' } })
+        await client.callTool({ name: 'cdp_evaluate', arguments: { expression: 'document.title' } })
+        await client.callTool({ name: 'dom_query_selector', arguments: { selector: 'h1' } })
       }, 50)
+
+      expect(chromeClient.getSendMock()).toHaveBeenCalledWith('Page.navigate', { url: 'https://example.com' }, expect.any(String))
     })
   })
 
   describe('Memory and Throughput Tests', () => {
-    it('should handle high-frequency requests', async () => {
-      mockChromeClient.send
-        .mockResolvedValue(
-          createCDPResponse({
-            result: { value: 'test' },
-          })
-        )
+    it('should handle high-frequency concurrent requests', async () => {
+      respondWith(42)
 
-      const iterations = 1000
       const start = performance.now()
-      
-      const promises = []
-      for (let i = 0; i < iterations; i++) {
-        promises.push(
-          client.request({
-            method: 'tools/call',
-            params: {
-              name: 'evaluate',
-              arguments: { expression: '1+1' },
-            },
-          })
+      const responses = await Promise.all(
+        Array.from({ length: 1000 }, () =>
+          client.callTool({ name: 'cdp_evaluate', arguments: { expression: '6 * 7' } })
         )
-        
-        // Batch requests to avoid overwhelming
-        if (promises.length >= 50) {
-          await Promise.all(promises)
-          promises.length = 0
-        }
-      }
-      
-      await Promise.all(promises)
-      const end = performance.now()
-      
-      const totalTime = end - start
-      const throughput = (iterations / totalTime) * 1000
-      
-      console.log(`High-frequency test: ${throughput.toFixed(0)} ops/sec`)
-      expect(throughput).toBeGreaterThan(100) // At least 100 ops/sec
+      )
+      const elapsed = performance.now() - start
+
+      console.log(`1000 concurrent cdp_evaluate calls: ${elapsed.toFixed(2)}ms`)
+      expect(responses.every(r => parseToolText(r).result === 42)).toBe(true)
+      expect(elapsed).toBeLessThan(5000)
     })
 
     it('should not leak memory over extended operations', async () => {
+      respondWith(Array.from({ length: 100 }, (_, i) => ({ id: i, value: 'x'.repeat(1000) })))
+
       const memStart = process.memoryUsage().heapUsed
-      
-      // Perform many operations
       for (let i = 0; i < 100; i++) {
-        mockChromeClient.send
-          .mockResolvedValueOnce(undefined)
-          .mockResolvedValueOnce(
-            createCDPResponse({
-              result: {
-                value: {
-                  // Large response
-                  data: Array(100).fill({ id: i, value: 'x'.repeat(1000) }),
-                },
-              },
-            })
-          )
-        
-        await client.request({
-          method: 'resources/read',
-          params: { uri: 'cdp://runtime/console' },
-        })
-        
-        // Force garbage collection if available
+        await client.callTool({ name: 'cdp_evaluate', arguments: { expression: 'bigPayload' } })
         if (global.gc) {
           global.gc()
         }
       }
-      
-      const memEnd = process.memoryUsage().heapUsed
-      const memoryGrowth = (memEnd - memStart) / 1024 / 1024 // MB
-      
+      const memoryGrowth = (process.memoryUsage().heapUsed - memStart) / 1024 / 1024
+
       console.log(`Memory growth over 100 operations: ${memoryGrowth.toFixed(2)} MB`)
-      expect(memoryGrowth).toBeLessThan(50) // Less than 50MB growth
+      expect(memoryGrowth).toBeLessThan(50)
     })
   })
 
   describe('Large Data Handling', () => {
-    it('should handle large console message arrays', async () => {
-      const largeMessages = Array(1000).fill({
-        type: 'log',
-        text: 'x'.repeat(100),
-        timestamp: Date.now(),
-      })
-      
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce(
-          createCDPResponse({
-            result: {
-              value: { messages: largeMessages },
-            },
-          })
-        )
+    it('should handle large evaluation results', async () => {
+      const largeMessages = Array.from({ length: 1000 }, () => ({ type: 'log', text: 'x'.repeat(100) }))
+      respondWith(largeMessages)
 
       const start = performance.now()
-      const response = await client.request({
-        method: 'resources/read',
-        params: { uri: 'cdp://runtime/console' },
-      })
-      const end = performance.now()
-      
-      const responseTime = end - start
+      const data = parseToolText(await client.callTool({ name: 'cdp_evaluate', arguments: { expression: 'messages' } }))
+      const responseTime = performance.now() - start
+
       console.log(`Large data handling (1000 messages): ${responseTime.toFixed(2)}ms`)
-      
-      expect(responseTime).toBeLessThan(500) // Should handle in under 500ms
-      expect(JSON.parse(response.contents[0].text).messages).toHaveLength(1000)
-    })
-
-    it('should handle large DOM trees efficiently', async () => {
-      const createLargeDOM = (depth: number, breadth: number): any => {
-        if (depth === 0) return null
-        return {
-          nodeId: Math.random(),
-          nodeName: 'DIV',
-          children: Array(breadth).fill(null).map(() => 
-            createLargeDOM(depth - 1, breadth)
-          ).filter(Boolean),
-        }
-      }
-      
-      mockChromeClient.send
-        .mockResolvedValueOnce(undefined)
-        .mockResolvedValueOnce(
-          createCDPResponse({
-            root: createLargeDOM(5, 5), // 5^5 = 3125 nodes
-          })
-        )
-
-      const start = performance.now()
-      await client.request({
-        method: 'resources/read',
-        params: { uri: 'cdp://dom/document' },
-      })
-      const end = performance.now()
-      
-      const responseTime = end - start
-      console.log(`Large DOM tree handling (3125 nodes): ${responseTime.toFixed(2)}ms`)
-      
-      expect(responseTime).toBeLessThan(1000) // Should handle in under 1 second
+      expect(data.result).toHaveLength(1000)
+      expect(responseTime).toBeLessThan(500)
     })
   })
 })

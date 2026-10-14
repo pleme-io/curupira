@@ -89,11 +89,19 @@ describe('CDPToolProvider with Dependency Injection', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data).toBe('Hello from Chrome!');
+      expect(result.data.result).toBe('Hello from Chrome!');
+      expect(result.data.type).toBe('string');
+      expect(result.data.expressionLength).toBe('document.title'.length);
+      expect(chromeService.getMockClient().getSendMock()).toHaveBeenCalledWith(
+        'Runtime.evaluate',
+        expect.objectContaining({ expression: 'document.title', awaitPromise: true, returnByValue: true }),
+        expect.any(String)
+      );
     });
 
     it('should handle evaluation errors', async () => {
       const mockClient = chromeService.getMockClient();
+      mockClient.getSendMock().mockReset();
       mockClient.simulateSendError(new Error('Evaluation failed'));
 
       const handler = provider.getHandler('cdp_evaluate');
@@ -102,7 +110,7 @@ describe('CDPToolProvider with Dependency Injection', () => {
       });
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('CDP command Runtime.evaluate failed');
+      expect(result.error).toBe('CDP command Runtime.evaluate failed: Evaluation failed');
       
       // Check error was logged
       expect(logger.hasLog('error', 'CDP command failed')).toBe(true);
@@ -115,7 +123,8 @@ describe('CDPToolProvider with Dependency Injection', () => {
       const result = await handler!.execute({});
 
       expect(result.success).toBe(false);
-      expect(result.error).toContain('expression must be a string');
+      expect(result.error).toBe('Validation failed for cdp.cdp_evaluate');
+      expect(chromeService.getMockClient().getSendMock()).not.toHaveBeenCalled();
     });
   });
 
@@ -127,7 +136,8 @@ describe('CDPToolProvider with Dependency Injection', () => {
     it('should navigate to URL', async () => {
       const mockClient = chromeService.getMockClient();
       mockClient.simulateSendResult({
-        frameId: 'main-frame-id'
+        frameId: 'main-frame-id',
+        loaderId: 'loader-1'
       });
 
       const handler = provider.getHandler('cdp_navigate');
@@ -136,7 +146,13 @@ describe('CDPToolProvider with Dependency Injection', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data).toEqual({ frameId: 'main-frame-id' });
+      expect(result.data).toMatchObject({
+        frameId: 'main-frame-id',
+        loaderId: 'loader-1',
+        navigationId: 'loader-1',
+        url: 'https://example.com',
+        waitCondition: 'load'
+      });
       
       // Verify CDP command was called correctly
       const sendMock = mockClient.getSendMock();
@@ -175,15 +191,19 @@ describe('CDPToolProvider with Dependency Injection', () => {
 
     it('should use provided session ID', async () => {
       chromeService.simulateConnection();
-      
+
       const handler = provider.getHandler('cdp_evaluate');
-      await handler!.execute({
+      const result = await handler!.execute({
         expression: 'test',
         sessionId: 'custom-session-123'
       });
 
-      // Session management would use the custom session ID
-      // In the real implementation, this would be passed through
+      expect(result.success).toBe(true);
+      expect(chromeService.getMockClient().getSendMock()).toHaveBeenCalledWith(
+        'Runtime.evaluate',
+        expect.objectContaining({ expression: 'test' }),
+        'custom-session-123'
+      );
     });
   });
 });
