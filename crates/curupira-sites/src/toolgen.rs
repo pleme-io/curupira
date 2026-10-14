@@ -211,8 +211,44 @@ pub struct Bundle {
     pub sites: Vec<SiteBundle>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspaces: Vec<Workspace>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub postures: Vec<Posture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<StackProvenance>,
+}
+
+/// A named operating state (e.g. `off`, `warm`, `incident`): which workspaces
+/// stay open, when, how sign-ins are refilled, and who is told when a person
+/// must sign in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Posture {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub workspaces: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hours: Option<[u8; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub days: Vec<u8>,
+    pub interval_minutes: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signin: Vec<FormSignin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify: Option<String>,
+}
+
+/// Refill a username/password form on any tab whose URL contains `match`,
+/// reading the values from files so no secret enters the config.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FormSignin {
+    #[serde(rename = "match")]
+    pub match_url: String,
+    pub user_file: String,
+    pub password_file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_selector: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_selector: Option<String>,
 }
 
 /// A named set of tabs brought up together, resolved to absolute URLs.

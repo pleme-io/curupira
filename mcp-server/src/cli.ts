@@ -445,6 +445,42 @@ program
     }
   })
 
+program
+  .command('posture')
+  .description('Show or set the operating posture (off, or a posture the site stack defines, e.g. warm, incident)')
+  .argument('[name]', 'Posture to switch to')
+  .action(async (name?: string) => {
+    const { currentPosture, setPosture, buildStack, OFF } = await import('./warm/warm.js')
+    const legal = [OFF, ...(buildStack(process.env.CURUPIRA_STACK_BIN || 'curupira-stack').postures ?? []).map((p) => p.name)]
+    if (name) {
+      if (!legal.includes(name)) {
+        process.stderr.write(`unknown posture '${name}'; legal: ${legal.join(', ')}\n`)
+        process.exit(2)
+      }
+      setPosture(name)
+    }
+    process.stdout.write(JSON.stringify({ posture: currentPosture(), legal }) + '\n')
+  })
+
+program
+  .command('warm')
+  .description('Apply the current posture once: open its missing workspace tabs, refill form sign-ins, notify on the rest')
+  .option('--posture <name>', 'Use this posture for this run instead of the saved one')
+  .option('--force', 'Ignore the posture interval and run now')
+  .option('--port <port>', 'DevTools port of the workspace Chrome', process.env.CURUPIRA_WORKSPACE_CHROME_PORT || '9222')
+  .action(async (options) => {
+    const { warm, defaultProfile, currentPosture } = await import('./warm/warm.js')
+    const report = await warm({
+      posture: options.posture || currentPosture(),
+      port: Number(options.port),
+      profile: defaultProfile(),
+      chromeBin: process.env.CURUPIRA_WORKSPACE_CHROME_BIN,
+      force: Boolean(options.force),
+    })
+    process.stdout.write(JSON.stringify(report) + '\n')
+    process.exit(report.errors.length > 0 ? 1 : 0)
+  })
+
 // Parse command line arguments
 program.parse(process.argv)
 

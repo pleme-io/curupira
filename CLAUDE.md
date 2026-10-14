@@ -20,6 +20,7 @@ the pipeline is shared. Map:
 | `site_workspace_list` / `site_workspace_open` | open a workspace's tabs in the connected headed Chrome; the server builds the stack at start (`CURUPIRA_STACK_BIN`), falling back to the static bundle when no layer exists or `CURUPIRA_SITES_SOURCE=bundle` |
 | typing actions (`Action.input`) | `locator` is the text box; `site_act` with `value` focuses it, sends `value` as trusted `Input.insertText`, then submits by Enter, a click, or not at all; typing into an app is `effect: mutate` and needs `authorized_by` like any write |
 | `site_watch` / `site_events` | a page's `events` streams: a MutationObserver buffers new `items` inside `within` (filtered by `contains`) until drained; `watching: false` means no observer, never "no events" |
+| postures (`curupira-mcp posture [name]`, `curupira-mcp warm`) | named states in the stack (`postures.<name>`: workspaces, hours, days, interval_minutes, form `signin` rules reading files, `notify` bin); `off` is always legal; `warm` applies the selected one: opens missing tabs over CDP, refills forms, notifies for the rest; HM `programs.curupira.warm.enable` runs it from launchd every 5 min |
 | `site_app_launch` | a browser profile with `launch: {app, port}` is an Electron app: opened with `--remote-debugging-port` and connected, then driven by the same tools |
 | `sites/` | public examples only (`example.invalid`, stock Apple apps) |
 

@@ -50,7 +50,7 @@ let
     sites =
       (lib.mapAttrs (name: value: { file = "${profileFile name value}"; }) cfg.sites)
       // (lib.mapAttrs (_: file: { file = "${file}"; }) cfg.siteFiles);
-    inherit (cfg.stack) workspaces;
+    inherit (cfg.stack) workspaces postures;
   });
   bundlePath = if hasProfiles then builtBundle else null;
 in
@@ -198,6 +198,37 @@ in
           or set `enabled = false` on one.
         '';
       };
+
+      postures = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
+        default = { };
+        example = lib.literalExpression ''
+          {
+            warm = {
+              description = "working hours: start-of-day set open and signed in";
+              workspaces = [ "morning" ];
+              hours = [ 8 19 ];
+              days = [ 1 2 3 4 5 ];
+              interval_minutes = 30;
+              signin.logs = { match = "logs.example.invalid"; user_file = "/run/secrets/logs-user"; password_file = "/run/secrets/logs-pass"; };
+              notify = "shirase";
+            };
+          }
+        '';
+        description = ''
+          Named operating states. `curupira-mcp posture <name>` selects one
+          (`off` is always legal and does nothing); `curupira-mcp warm` applies
+          the selected one: opens its workspaces' missing tabs inside its
+          `hours`/`days`, refills form sign-ins from files, and runs `notify`
+          (`<bin> send -a curupira -u normal <title> <body>`) for tabs that still
+          need a person. Keyed so a higher layer can change one field or
+          `enabled = false` a posture or a sign-in rule.
+        '';
+      };
+    };
+
+    warm = {
+      enable = lib.mkEnableOption "a launchd agent that runs `curupira-mcp warm` every 5 minutes; each posture's interval_minutes paces the real work";
     };
 
     cdpTimeoutMs = lib.mkOption {
@@ -230,8 +261,20 @@ in
     # declared profiles rather than silently none.
     xdg.configFile = lib.optionalAttrs (cfg.bundle != null) {
       "curupira/sites.bundle.json".source = cfg.bundle;
-    } // lib.optionalAttrs (cfg.stack.enable && (hasProfiles || cfg.stack.workspaces != { })) {
+    } // lib.optionalAttrs (cfg.stack.enable && (hasProfiles || cfg.stack.workspaces != { } || cfg.stack.postures != { })) {
       "curupira-sites/curupira-sites.yaml".source = userLayer;
+    };
+
+    launchd.agents.curupira-warm = lib.mkIf (cfg.warm.enable && pkgs.stdenv.isDarwin) {
+      enable = true;
+      config = {
+        ProgramArguments = [ "${cfg.package}/bin/curupira-mcp" "warm" ];
+        StartInterval = 300;
+        RunAtLoad = true;
+        ProcessType = "Background";
+        StandardOutPath = "${config.home.homeDirectory}/Library/Logs/curupira-warm.log";
+        StandardErrorPath = "${config.home.homeDirectory}/Library/Logs/curupira-warm.log";
+      };
     };
   };
 }

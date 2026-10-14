@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use curupira_sites::{Bundle, Profile, StackProvenance, Workspace, WorkspaceTab};
+use curupira_sites::{Bundle, FormSignin, Posture, Profile, StackProvenance, Workspace, WorkspaceTab};
 use figment::value::magic::RelativePathBuf;
 use serde::Deserialize;
 
@@ -14,6 +14,46 @@ pub struct Stack {
     pub sites: BTreeMap<String, SiteEntry>,
     #[serde(default)]
     pub workspaces: BTreeMap<String, WorkspaceEntry>,
+    #[serde(default)]
+    pub postures: BTreeMap<String, PostureEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PostureEntry {
+    #[serde(default = "on")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub workspaces: Vec<String>,
+    #[serde(default)]
+    pub hours: Option<[u8; 2]>,
+    #[serde(default)]
+    pub days: Vec<u8>,
+    #[serde(default = "thirty")]
+    pub interval_minutes: u32,
+    #[serde(default)]
+    pub signin: BTreeMap<String, SigninEntry>,
+    #[serde(default)]
+    pub notify: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SigninEntry {
+    #[serde(default = "on")]
+    pub enabled: bool,
+    #[serde(rename = "match")]
+    pub match_url: String,
+    pub user_file: String,
+    pub password_file: String,
+    #[serde(default)]
+    pub user_selector: Option<String>,
+    #[serde(default)]
+    pub password_selector: Option<String>,
+}
+
+const fn thirty() -> u32 {
+    30
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -130,11 +170,57 @@ pub fn compile(stack: &Stack, layers: &[PathBuf]) -> Bundle {
         });
     }
 
+    let ws_names: Vec<&str> = bundle.workspaces.iter().map(|w| w.name.as_str()).collect();
+    for (name, p) in stack.postures.iter().filter(|(_, p)| p.enabled) {
+        match check_posture(name, p, &ws_names) {
+            Ok(()) => bundle.postures.push(Posture {
+                name: name.clone(),
+                description: p.description.clone(),
+                workspaces: p.workspaces.clone(),
+                hours: p.hours,
+                days: p.days.clone(),
+                interval_minutes: p.interval_minutes,
+                signin: p
+                    .signin
+                    .values()
+                    .filter(|s| s.enabled)
+                    .map(|s| FormSignin {
+                        match_url: s.match_url.clone(),
+                        user_file: s.user_file.clone(),
+                        password_file: s.password_file.clone(),
+                        user_selector: s.user_selector.clone(),
+                        password_selector: s.password_selector.clone(),
+                    })
+                    .collect(),
+                notify: p.notify.clone(),
+            }),
+            Err(e) => refused.push(format!("posture '{name}': {e}")),
+        }
+    }
+
     bundle.stack = Some(StackProvenance {
         layers: layers.iter().map(|p| p.display().to_string()).collect(),
         refused,
     });
     bundle
+}
+
+fn check_posture(name: &str, p: &PostureEntry, workspaces: &[&str]) -> Result<(), String> {
+    if let Some(missing) = p.workspaces.iter().find(|w| !workspaces.contains(&w.as_str())) {
+        return Err(format!("names workspace '{missing}', which no layer defines or which is disabled"));
+    }
+    if let Some([from, to]) = p.hours {
+        if from >= to || to > 24 {
+            return Err(format!("hours [{from}, {to}] must satisfy from < to <= 24"));
+        }
+    }
+    if let Some(d) = p.days.iter().find(|d| **d > 6) {
+        return Err(format!("day {d} is not 0 (Sunday) to 6 (Saturday)"));
+    }
+    if p.interval_minutes == 0 {
+        return Err(format!("{name}: interval_minutes must be at least 1"));
+    }
+    Ok(())
 }
 
 fn resolve_tab(key: &str, tab: &TabEntry, sites: &BTreeMap<&str, &Profile>) -> Result<WorkspaceTab, String> {
@@ -197,6 +283,30 @@ mod tests {
         .unwrap();
         let paths = vec![user.join("curupira-sites.yaml"), repo.join(".curupira-sites.yaml")];
         (root, paths)
+    }
+
+    #[test]
+    fn postures_merge_per_field_and_a_bad_one_is_refused_alone() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a.yaml");
+        let b = root.path().join("b.yaml");
+        fs::write(
+            &a,
+            "workspaces:\n  morning: { tabs: { s: { url: https://status.example.invalid } } }\npostures:\n  warm:\n    workspaces: [morning]\n    hours: [8, 19]\n    days: [1, 2, 3, 4, 5]\n    signin:\n      logs: { match: logs.example.invalid, user_file: /u, password_file: /p }\n  broken:\n    workspaces: [nope]\n",
+        )
+        .unwrap();
+        fs::write(&b, "postures:\n  warm:\n    interval_minutes: 15\n    signin:\n      logs: { enabled: false, match: x, user_file: x, password_file: x }\n").unwrap();
+        let paths = vec![a, b];
+        let bundle = compile(&load(&paths).unwrap(), &paths);
+        assert_eq!(bundle.postures.len(), 1);
+        let warm = &bundle.postures[0];
+        assert_eq!(warm.name, "warm");
+        assert_eq!(warm.workspaces, vec!["morning"]);
+        assert_eq!(warm.hours, Some([8, 19]));
+        assert_eq!(warm.interval_minutes, 15);
+        assert!(warm.signin.is_empty(), "the higher layer configured the sign-in rule off");
+        let refused = &bundle.stack.as_ref().unwrap().refused;
+        assert!(refused.iter().any(|r| r.contains("posture 'broken'") && r.contains("nope")), "{refused:?}");
     }
 
     #[test]
