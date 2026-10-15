@@ -231,24 +231,10 @@ export abstract class BaseToolProvider<TConfig extends BaseToolProviderConfig = 
       });
     }
 
-    // If no sessionId provided, try to use an existing active user session first
     try {
-      // Try to get the active user-facing session (filters out DevTools)
-      const activeSession = client.getActiveUserSession();
-
-      if (activeSession) {
-        this.logger.debug({ sessionId: activeSession }, 'Using existing active user session');
-        return Result.ok({
-          sessionId: activeSession as SessionId,
-          client
-        });
-      }
-
-      // If no active session exists, create a new one
-      this.logger.debug('No active user session found, creating new Chrome CDP session');
-      const session = await client.createSession();
+      const active = await client.activePageSession();
       return Result.ok({
-        sessionId: session.sessionId as SessionId,
+        sessionId: active as SessionId,
         client
       });
     } catch (error) {

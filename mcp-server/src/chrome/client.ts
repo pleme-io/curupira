@@ -506,8 +506,16 @@ export class ChromeClient implements IChromeClient {
     sessionId?: string
   ): Promise<T> {
     if (!sessionId) {
-      // Browser-level command via HTTP
-      return this.sendHttpCommand<T>(method, params);
+      if (method.startsWith('Target.') || method.startsWith('Browser.')) {
+        if (this.browserWs && this.browserWs.readyState === WebSocket.OPEN) {
+          return this.sendBrowserCommand<T>(method, params);
+        }
+        if (method === 'Target.createTarget') {
+          return this.createTargetOverHttp(String(params?.url ?? 'about:blank')) as Promise<T>;
+        }
+        throw new Error(`${method} needs the browser WebSocket, which this connection does not have`);
+      }
+      sessionId = await this.activePageSession();
     }
 
     const session = this.sessions.get(sessionId);
@@ -667,21 +675,35 @@ export class ChromeClient implements IChromeClient {
     }
   }
 
-  private async sendHttpCommand<T>(method: string, params?: any): Promise<T> {
+  async activePageSession(): Promise<string> {
+    await this.updateTargets();
+    const page = Array.from(this.targets.values()).find(
+      (t) =>
+        t.type === 'page' &&
+        !/^(devtools|chrome|chrome-extension|chrome-untrusted):/.test(t.url) &&
+        !t.title.includes('DevTools')
+    );
+    if (!page) {
+      throw new Error('no page tab is open in the connected browser');
+    }
+    const protocol = this.config.secure ? 'https' : 'http';
+    await fetch(`${protocol}://${this.config.host}:${this.config.port}/json/activate/${page.targetId}`).catch(() => undefined);
+    if (this.sessions.has(page.targetId)) {
+      return page.targetId;
+    }
+    const session = await this.createSession(page.targetId);
+    return session.sessionId;
+  }
+
+  private async createTargetOverHttp(url: string): Promise<{ targetId: string }> {
     const protocol = this.config.secure ? 'https' : 'http';
     const baseUrl = `${protocol}://${this.config.host}:${this.config.port}`;
-    
-    const response = await fetch(`${baseUrl}/json/runtime/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params || {})
-    });
-
+    const response = await fetch(`${baseUrl}/json/new?${encodeURI(url)}`, { method: 'PUT' });
     if (!response.ok) {
-      throw new Error(`HTTP command failed: ${response.statusText}`);
+      throw new Error(`could not open a tab for ${url}: ${response.status} ${response.statusText}`);
     }
-
-    return response.json() as Promise<T>;
+    const created = (await response.json()) as { id?: string };
+    return { targetId: created.id ?? '' };
   }
 
   async updateTargets(): Promise<void> {

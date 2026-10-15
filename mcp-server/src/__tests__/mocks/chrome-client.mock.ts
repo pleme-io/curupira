@@ -62,6 +62,10 @@ export class MockChromeClient extends EventEmitter implements IChromeClient {
     return this.targets;
   }
 
+  async activePageSession(): Promise<string> {
+    return this.getActiveUserSession() ?? (await this.createSession()).sessionId;
+  }
+
   getActiveUserSession(): string | null {
     // For mock, return the first session if any exist
     const sessions = Array.from(this.sessions.values());

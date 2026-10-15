@@ -153,15 +153,15 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
   const now = opts.now ?? new Date();
   const name = currentPosture();
   const report: ReconcileReport = { at: now.getTime(), posture: name, state: 'idle', tick_seconds: 60, desired: 0, missing: [], opened: [], strays: [], newlyQuestioned: [], closed: [], errors: [] };
-  if (name === OFF) return { ...report, reason: 'posture is off' };
+  if (name === OFF) return settle({ ...report, reason: 'posture is off' });
   const bundle = buildStack(opts.stackBin ?? (process.env.CURUPIRA_STACK_BIN || 'curupira-stack'));
   const posture = (bundle.postures ?? []).find((p) => p.name === name);
-  if (!posture) return { ...report, reason: `posture '${name}' is not in the stack`, errors: [`unknown posture '${name}'`] };
+  if (!posture) return settle({ ...report, reason: `posture '${name}' is not in the stack`, errors: [`unknown posture '${name}'`] });
   const rc = posture.reconcile;
-  if (!rc) return { ...report, reason: `posture '${name}' declares no reconcile block` };
+  if (!rc) return settle({ ...report, reason: `posture '${name}' declares no reconcile block` });
   report.tick_seconds = rc.tick_seconds;
   if (!takeLease(rc.tick_seconds, now.getTime())) return { ...report, state: 'held', reason: 'another curupira holds the reconcile lease' };
-  if (!inWindow(now, posture.hours, posture.days)) return { ...report, reason: `outside posture '${name}' hours` };
+  if (!inWindow(now, posture.hours, posture.days)) return settle({ ...report, reason: `outside posture '${name}' hours` });
 
   const profile = opts.profile ?? defaultProfile();
   const base = `http://127.0.0.1:${opts.port}`;
@@ -170,13 +170,13 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
 
   if (rc.tabs === 'enforce') {
     const chrome = await ensureChrome(opts.port, profile, opts.chromeBin);
-    if (chrome.error) return { ...report, state: 'blind', reason: chrome.error, errors: [chrome.error] };
+    if (chrome.error) return settle({ ...report, state: 'blind', reason: chrome.error, errors: [chrome.error] });
   }
   let targets: WarmTarget[];
   try {
     targets = (await (await fetch(`${base}/json/list`)).json()) as WarmTarget[];
   } catch (err) {
-    return { ...report, state: 'blind', reason: `Chrome on port ${opts.port} did not answer`, errors: [String(err)] };
+    return settle({ ...report, state: 'blind', reason: `Chrome on port ${opts.port} did not answer`, errors: [String(err)] });
   }
 
   if (rc.tabs !== 'off') {
@@ -228,6 +228,10 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
 
   const open = report.strays.filter((s) => s.verdict === 'questioned').length;
   report.state = report.missing.length === 0 && open === 0 ? 'converged' : 'converging';
+  return settle(report);
+}
+
+function settle(report: ReconcileReport): ReconcileReport {
   writeJson(reportFile(), report);
   return report;
 }

@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { findStrays, mergeStrays, reconcileOnce, takeLease } from '../reconcile/reconcile.js';
+import { findStrays, lastReport, mergeStrays, reconcileOnce, reportFile, takeLease } from '../reconcile/reconcile.js';
 
 const page = (id: string, url: string) => ({ id, type: 'page', url });
 
@@ -50,5 +50,13 @@ describe('reconcile', () => {
     const r = await reconcileOnce({ port: 1 });
     expect(r.state).toBe('idle');
     expect(r.reason).toBe('posture is off');
+  });
+
+  it('records an idle tick, so an old converged report never stands for the present', async () => {
+    process.env.CURUPIRA_POSTURE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-')), 'posture');
+    fs.writeFileSync(reportFile(), JSON.stringify({ at: 1, posture: 'warm', state: 'converged' }));
+    const r = await reconcileOnce({ port: 1 });
+    expect(lastReport()).toEqual(r);
+    expect(lastReport()?.state).toBe('idle');
   });
 });
