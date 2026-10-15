@@ -86,6 +86,26 @@ mod mac {
         None
     }
 
+    fn has_windows(app: &Element) -> bool {
+        matches!(seam::attribute(app, "AXWindows"), seam::Raw::Elements(v) if !v.is_empty())
+            || matches!(seam::attribute(app, "AXWindows"), seam::Raw::Element(_))
+    }
+
+    fn reopen(bundle_id: &str, app: &Element) {
+        if !bundle_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-') {
+            return;
+        }
+        let script = format!("tell application id \"{bundle_id}\" to reopen");
+        if !std::process::Command::new("/usr/bin/osascript").args(["-e", &script]).status().is_ok_and(|s| s.success()) {
+            return;
+        }
+        let mut waited = 0;
+        while waited < LAUNCH_WAIT_MS && !has_windows(app) {
+            std::thread::sleep(Duration::from_millis(LAUNCH_POLL_MS));
+            waited += LAUNCH_POLL_MS;
+        }
+    }
+
     impl Host for SystemHost {
         type Tree = AppTree;
 
@@ -108,7 +128,13 @@ mod mac {
             match pid {
                 None => Opened::NotRunning,
                 Some(pid) => match seam::application(pid) {
-                    Some(app) => Opened::App(AppTree { pid, app }),
+                    Some(app) => {
+                        let _ = seam::set_true(&app, "AXManualAccessibility");
+                        if launch_it && !has_windows(&app) {
+                            reopen(bundle_id, &app);
+                        }
+                        Opened::App(AppTree { pid, app })
+                    }
                     None => Opened::Fault(format!("could not open the accessibility element of pid {pid}")),
                 },
             }
