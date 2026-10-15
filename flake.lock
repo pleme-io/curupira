@@ -3366,11 +3366,11 @@
         "substrate": "substrate"
       },
       "locked": {
-        "lastModified": 1785905931,
-        "narHash": "sha256-27ducEgRq7eEezalGoUzfJLXia7vAWp77XKze1OoVco=",
+        "lastModified": 1792051351,
+        "narHash": "sha256-Au/v95FPahWsE0wlFiGiTZvBebubxFUXqtDUM4NrYRM=",
         "owner": "pleme-io",
         "repo": "pleme-linker",
-        "rev": "fb40dd91a079fd4172428571f74e7bc4b1597be0",
+        "rev": "1cf32ab871e6d7c895e479f4d26bb249881f364a",
         "type": "github"
       },
       "original": {
