@@ -444,3 +444,91 @@ describe('SiteToolProvider', () => {
     });
   });
 });
+
+describe('bounded windows and frozen tabs', () => {
+  let container: Container;
+  const port = process.env.CURUPIRA_WORKSPACE_CHROME_PORT;
+
+  beforeEach(() => {
+    container = createTestContainer();
+    process.env.CURUPIRA_WORKSPACE_CHROME_PORT = '1';
+  });
+  afterEach(() => {
+    resetTestContainer(container);
+    if (port === undefined) delete process.env.CURUPIRA_WORKSPACE_CHROME_PORT;
+    else process.env.CURUPIRA_WORKSPACE_CHROME_PORT = port;
+  });
+
+  const goto = (page: string, url_template: string, window: unknown, required: string[]) => ({
+    name: `logs_${page}_goto`,
+    description: `Navigate to the '${page}' page`,
+    kind: 'goto',
+    page,
+    json_schema: { ...NO_ARGS, required },
+    js: 'READY',
+    url_template,
+    window,
+  });
+  const windowed = (budget: Record<string, unknown> = {}) => ({
+    schema_version: 2,
+    budget,
+    sites: [
+      {
+        id: 'logs',
+        base_url: 'https://logs.example.invalid',
+        match: ['logs.example.invalid'],
+        tools: [
+          goto('search', 'https://logs.example.invalid/search?q={q}&earliest={earliest}', { kind: 'relative', param: 'earliest', default: '-24h', max: '-30d' }, ['q']),
+          goto('dash', 'https://logs.example.invalid/d/{id}', { kind: 'epoch-ms', from: 'from_ts', to: 'to_ts', knob: 'window', default: '-1h', max: '-7d' }, ['id']),
+        ],
+      },
+    ],
+  });
+  const navigated = (sent: Array<{ method: string; params: any }>) => sent.filter((s) => s.method === 'Page.navigate').map((s) => s.params.url as string);
+
+  it('fills the default window on a search page and keeps a bounded one', async () => {
+    const browser = fakeBrowser('https://logs.example.invalid/');
+    const provider = makeProvider(container, writeBundle(windowed()), { chromeService: browser.service });
+    const filled = (await provider.getHandler('site_goto')!.execute({ site: 'logs', page: 'search', params: { q: 'err' } })) as any;
+    expect(filled.success).toBe(true);
+    const kept = (await provider.getHandler('site_goto')!.execute({ site: 'logs', page: 'search', params: { q: 'err', earliest: '-15m' } })) as any;
+    expect(kept.success).toBe(true);
+    expect(navigated(browser.sent)).toEqual(['https://logs.example.invalid/search?q=err&earliest=-24h', 'https://logs.example.invalid/search?q=err&earliest=-15m']);
+  }, 20000);
+
+  it('refuses an all-time search before navigating', async () => {
+    const browser = fakeBrowser('https://logs.example.invalid/');
+    const provider = makeProvider(container, writeBundle(windowed()), { chromeService: browser.service });
+    const res = (await provider.getHandler('site_goto')!.execute({ site: 'logs', page: 'search', params: { q: 'err', earliest: '0' } })) as any;
+    expect(res.success).toBe(false);
+    expect(res.data).toMatchObject({ outcome: 'refused', param: 'earliest' });
+    expect(navigated(browser.sent)).toEqual([]);
+  });
+
+  it('appends an epoch window to a dashboard', async () => {
+    const browser = fakeBrowser('https://logs.example.invalid/');
+    const provider = makeProvider(container, writeBundle(windowed()), { chromeService: browser.service });
+    const before = Date.now();
+    const res = (await provider.getHandler('site_goto')!.execute({ site: 'logs', page: 'dash', params: { id: 'abc' } })) as any;
+    expect(res.success).toBe(true);
+    const u = new URL(navigated(browser.sent)[0]);
+    expect(u.pathname).toBe('/d/abc');
+    const span = Number(u.searchParams.get('to_ts')) - Number(u.searchParams.get('from_ts'));
+    expect(span).toBe(3_600_000);
+    expect(Number(u.searchParams.get('to_ts'))).toBeGreaterThanOrEqual(before);
+  }, 20000);
+
+  it('answers frozen instead of hanging when the tab does not answer CDP', async () => {
+    const sent: string[] = [];
+    const client = { send: (method: string) => (sent.push(method), new Promise(() => {})) };
+    const provider = makeProvider(container, writeBundle(windowed({ cdp_timeout_ms: 500 })), { chromeService: { getCurrentClient: () => client } });
+    const t0 = Date.now();
+    const res = (await provider.getHandler('site_goto')!.execute({ site: 'logs', page: 'search', params: { q: 'err' } })) as any;
+    expect(Date.now() - t0).toBeLessThan(5000);
+    expect(res.success).toBe(false);
+    expect(res.error).toMatch(/^frozen/);
+    expect(res.data).toMatchObject({ outcome: 'blind', state: 'frozen' });
+    expect(res.data.next).toContain('/json/activate/');
+    expect(sent).not.toContain('Page.navigate');
+  });
+});

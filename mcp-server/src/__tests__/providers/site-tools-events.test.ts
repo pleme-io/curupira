@@ -87,9 +87,10 @@ describe('typing actions, event streams, app launch', () => {
     const res = await exec(make(c), 'site_act', { site: 'chat', page: 'channel', control: 'send', value: 'on it', authorized_by: 'yes send it' });
     expect(res.success).toBe(true);
     const methods = c.sent.map((s) => s.method);
-    expect(methods).toEqual(['Runtime.evaluate', 'Runtime.evaluate', 'Input.insertText', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
-    expect(c.sent[2]!.params).toEqual({ text: 'on it' });
-    expect(c.sent[3]!.params.key).toBe('Enter');
+    expect(methods).toEqual(['Runtime.evaluate', 'Runtime.evaluate', 'Runtime.evaluate', 'Input.insertText', 'Input.dispatchKeyEvent', 'Input.dispatchKeyEvent']);
+    expect(c.sent[0]!.params).toEqual({ expression: '1', returnByValue: true });
+    expect(c.sent[3]!.params).toEqual({ text: 'on it' });
+    expect(c.sent[4]!.params.key).toBe('Enter');
   });
 
   it('reports a missing text box instead of typing into whatever has focus', async () => {

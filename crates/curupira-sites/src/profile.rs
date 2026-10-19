@@ -262,6 +262,8 @@ pub struct Page {
     pub actions: Vec<Action>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub events: Vec<EventStream>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::window::TimeWindow>,
 }
 
 impl Page {
@@ -459,6 +461,9 @@ impl ConsoleProfile {
         validate_id(&self.id)?;
         dup_check("page", self.pages.iter().map(|p| p.name.as_str()))?;
         for p in &self.pages {
+            if let Some(w) = &p.window {
+                w.validate(&p.name, &p.route)?;
+            }
             dup_check(&format!("read on page '{}'", p.name), p.reads.iter().map(|r| r.name.as_str()))?;
             dup_check(
                 &format!("action on page '{}'", p.name),

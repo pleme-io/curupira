@@ -36,6 +36,10 @@ import { BaseProviderFactory, type ProviderDependencies } from '../provider.fact
 import type { ILogger } from '../../../core/interfaces/logger.interface.js';
 import type { IChromeService } from '../../../core/interfaces/chrome-service.interface.js';
 import type { IValidator } from '../../../core/interfaces/validator.interface.js';
+import { getJson, withDeadline } from '../../../guard/cdp.js';
+import { readMemoryBook, sampleMemory, enforceMemory } from '../../../guard/memory.js';
+import { budgetOf, closeCandidates, compileRoutes, isCountable, planTabs, readLedger, recordOpen, writeLedger, type Budget, type OpenPage } from '../../../guard/tabs.js';
+import { applyBounded, boundWindow, knobOf, type TimeWindow } from '../../../guard/window.js';
 
 /** One generated tool, as `curupira-sites` writes it. */
 interface ToolSpec {
@@ -52,6 +56,7 @@ interface ToolSpec {
   effect?: 'observe' | 'mutate';
   describes?: string;
   input?: { submit: 'none' } | { submit: 'enter' } | { submit: 'click'; js: string };
+  window?: TimeWindow;
 }
 
 interface CompiledEvent {
@@ -133,7 +138,11 @@ interface Bundle {
   sites: SiteBundle[];
   workspaces?: Workspace[];
   stack?: { layers: string[]; refused?: string[] };
+  budget?: Partial<Budget>;
 }
+
+const FROZEN_NEXT = (port: number) =>
+  `the tab's renderer is frozen (a hidden or background window). Bring it forward with GET http://127.0.0.1:${port}/json/activate/<targetId> (site_memory lists ids and which tabs are frozen), then retry`;
 
 function stackBin(): string {
   return process.env.CURUPIRA_STACK_BIN || 'curupira-stack';
@@ -834,8 +843,19 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     if (!template) {
       return { success: false, error: `page '${page.value.name}' of site '${site.value.site.id}' has no route to navigate to` };
     }
+    const given: Record<string, unknown> = { ...(args.params && typeof args.params === 'object' ? (args.params as Record<string, unknown>) : {}) };
+    let bounded: { substitute: Record<string, string>; append: Record<string, string> } = { substitute: {}, append: {} };
+    if (goto.window) {
+      const knob = knobOf(goto.window);
+      const b = boundWindow(goto.window, typeof given[knob] === 'string' ? (given[knob] as string) : undefined, Date.now());
+      if ('refused' in b) {
+        return { success: false, error: `refused: ${b.refused}`, data: { outcome: 'refused', param: knob, legal: '-<n><s|m|h|d|w>' } };
+      }
+      bounded = b;
+      delete given[knob];
+      for (const [k, v] of Object.entries(b.substitute)) given[k] = v;
+    }
     const required = routeParams(template);
-    const given = args.params && typeof args.params === 'object' ? (args.params as Record<string, unknown>) : {};
     const missing = required.filter((p) => typeof given[p] !== 'string' || (given[p] as string) === '');
     if (missing.length > 0) {
       return {
@@ -845,11 +865,14 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
           `pass params: {${required.map((p) => `"${p}": "..."`).join(', ')}}`,
       };
     }
-    const url = required.reduce((u, p) => u.split(`{${p}}`).join(encodeURIComponent(String(given[p]))), template);
+    const url = applyBounded(
+      required.reduce((u, p) => u.split(`{${p}}`).join(encodeURIComponent(String(given[p]))), template),
+      { substitute: {}, append: bounded.append },
+    );
     const nav = await this.navigate(url, goto.tab);
-    if (!nav.ok) return { success: false, error: nav.error };
+    if (!nav.ok) return this.failed(nav);
     const ready = await this.evaluate(goto.js ?? '');
-    if (!ready.ok) return { success: false, error: ready.error };
+    if (!ready.ok) return this.failed(ready);
     return {
       success: true,
       data: {
@@ -863,9 +886,11 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     };
   }
 
-  private async navigate(url: string, tab?: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  private async navigate(url: string, tab?: string): Promise<{ ok: true } | { ok: false; error: string; frozen?: boolean }> {
     const client = this.chromeService.getCurrentClient();
     if (!client) return { ok: false, error: NOT_CONNECTED };
+    const awake = await this.awake();
+    if (!awake.ok) return awake;
     try {
       await client.send('Page.navigate', { url });
     } catch (err) {
@@ -910,6 +935,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         },
       }),
     });
+    this.registerMemoryTool();
     this.registerPostureTools();
     if (workspaces.length === 0) return;
     this.registerTool({
@@ -929,6 +955,56 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
         required: ['workspace'],
       },
       handler: async (args: Record<string, unknown>) => this.openWorkspace(args, workspaces),
+    });
+  }
+
+  private registerMemoryTool(): void {
+    this.registerTool({
+      name: 'site_memory',
+      description:
+        'Memory and tab count of the curupira Chrome: every tab with its JS heap (frozen = did not answer CDP; activate it first), ' +
+        'Chrome resident memory by process, the tab and memory budgets, and the watchdog\'s recent reload/close events. Check it ' +
+        'before opening more tabs. `enforce: true` (effect: mutate, needs authorized_by) applies the budget now: reloads, then closes, an over-budget tab.',
+      argsSchema: PERMISSIVE,
+      jsonSchema: {
+        type: 'object',
+        properties: {
+          enforce: { type: 'boolean' },
+          authorized_by: { type: 'string' },
+        },
+        additionalProperties: false,
+      },
+      handler: async (args: Record<string, unknown>) => {
+        const budget = this.budget();
+        const port = this.chromePort();
+        if (args.enforce === true) {
+          if (!(typeof args.authorized_by === 'string' && args.authorized_by.trim())) {
+            return { success: false, error: 'enforce reloads or closes tabs (effect: mutate); pass authorized_by naming who said so' };
+          }
+          const { sample, events } = await enforceMemory(port, budget, Date.now(), true);
+          return { success: sample?.state === 'sampled', data: { budget, sample, events } };
+        }
+        const sample = await sampleMemory(port, budget);
+        const over = {
+          tabs: Math.max(0, sample.pages - budget.max_tabs),
+          tab_memory: sample.tabs.filter((t) => (t.heap_mb ?? 0) > budget.tab_memory_mb).map((t) => t.id),
+          chrome_memory: (sample.chrome.rss_mb ?? 0) > budget.chrome_memory_mb,
+        };
+        return {
+          success: sample.state === 'sampled',
+          ...(sample.state === 'sampled' ? {} : { error: sample.error }),
+          data: {
+            outcome: sample.state === 'sampled' ? 'found' : 'blind',
+            budget,
+            pages: sample.pages,
+            frozen: sample.tabs.filter((t) => t.state === 'frozen').length,
+            chrome: { state: sample.chrome.state, rss_mb: sample.chrome.rss_mb, processes: sample.chrome.processes?.slice(0, 10) },
+            tabs: sample.tabs,
+            over,
+            events: readMemoryBook().events.slice(-20),
+          },
+        };
+      },
     });
   }
 
@@ -984,6 +1060,22 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     });
   }
 
+  private async listPages(client: { send: (m: string, p?: Record<string, unknown>) => Promise<unknown> } | null): Promise<OpenPage[] | null> {
+    if (client) {
+      try {
+        const r = (await withDeadline(client.send('Target.getTargets') as Promise<{ targetInfos?: Array<{ targetId: string; type: string; url: string; title?: string }> }>, 3000));
+        if (r.ok && Array.isArray(r.value?.targetInfos)) return r.value.targetInfos.map((t) => ({ id: t.targetId, type: t.type, url: t.url, title: t.title }));
+      } catch {
+        /* fall through to the DevTools HTTP listing */
+      }
+    }
+    try {
+      return await getJson<OpenPage[]>(`http://127.0.0.1:${this.chromePort()}/json/list`);
+    } catch {
+      return null;
+    }
+  }
+
   private async openWorkspace(
     args: Record<string, unknown>,
     workspaces: Workspace[],
@@ -995,58 +1087,99 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     const only = Array.isArray(args.only) ? new Set(args.only.map(String)) : null;
     const tabs = ws.tabs.filter((t) => !only || only.has(t.key));
     const client = this.chromeService.getCurrentClient();
-    if (!client) return this.openWithoutConnection(ws.name, tabs);
+    const port = this.chromePort();
+    const base = `http://127.0.0.1:${port}`;
+    const pages = await this.listPages(client);
+    if (!pages) {
+      const running = await fetch(`${base}/json/version`, { signal: AbortSignal.timeout(2000) }).then((r) => r.ok).catch(() => false);
+      if (!client && !running) return this.launchWorkspace(ws.name, tabs);
+      return {
+        success: false,
+        error: 'blind: cannot list the open tabs, so the tab budget cannot be checked; nothing was opened',
+        data: { outcome: 'blind', workspace: ws.name, next: `check Chrome answers on ${base}/json/list, or chrome_connect` },
+      };
+    }
+    const budget = this.budget();
+    const routes = compileRoutes(this.bundle.sites);
+    const ledger = readLedger();
+    const now = Date.now();
+    const plan = planTabs({ desired: tabs, open: pages, ledger, routes, budget, now, closeDuplicates: false });
     const opened: Array<{ key: string; url: string; targetId: string }> = [];
     const failed: Array<{ key: string; url: string; error: string }> = [];
-    for (const t of tabs) {
+    for (const t of plan.open) {
       try {
-        const res = (await client.send('Target.createTarget', { url: t.url })) as { targetId?: string };
-        opened.push({ key: t.key, url: t.url, targetId: res?.targetId ?? '' });
+        let targetId = '';
+        if (client) {
+          const res = (await client.send('Target.createTarget', { url: t.url })) as { targetId?: string };
+          targetId = res?.targetId ?? '';
+        } else {
+          const r = await fetch(`${base}/json/new?${encodeURI(t.url)}`, { method: 'PUT' });
+          if (!r.ok) throw new Error(`HTTP ${r.status}`);
+          targetId = ((await r.json()) as { id?: string }).id ?? '';
+        }
+        recordOpen(ledger, targetId, t, t.tabKey, now);
+        opened.push({ key: t.key, url: t.url, targetId });
       } catch (err) {
         failed.push({ key: t.key, url: t.url, error: err instanceof Error ? err.message : String(err) });
       }
     }
-    return { success: failed.length === 0, data: { workspace: ws.name, opened, failed } };
+    writeLedger(ledger);
+    const byKey = new Map(tabs.map((t) => [t.key, t]));
+    const reused = Object.entries(plan.present).map(([key, targetId]) => ({ key, targetId }));
+    const refused = plan.overBudget.length > 0
+      ? {
+          outcome: 'refused',
+          reason: 'tab-budget',
+          max_tabs: budget.max_tabs,
+          open_tabs: plan.pages + opened.length,
+          not_opened: plan.overBudget,
+          close_first: closeCandidates(pages, plan, routes, tabs).slice(0, plan.overBudget.length + 5),
+          next: 'close tabs (close_first lists signed-out pages first), or raise budget.max_tabs in the site stack',
+        }
+      : undefined;
+    return {
+      success: failed.length === 0 && !refused,
+      ...(refused ? { error: `refused: ${plan.overBudget.length} tab(s) would pass the ${budget.max_tabs}-tab budget` } : {}),
+      data: {
+        workspace: ws.name,
+        opened,
+        reused,
+        signedOut: plan.signedOut.map((k) => ({ key: k, url: byKey.get(k)?.url, why: 'its host is on a sign-in page; sign in there first' })),
+        ...(refused ? { refused } : {}),
+        failed,
+      },
+    };
   }
 
-  private async openWithoutConnection(
+  private async launchWorkspace(
     workspace: string,
     tabs: WorkspaceTab[],
   ): Promise<{ success: boolean; error?: string; data?: unknown }> {
-    const port = Number(process.env.CURUPIRA_WORKSPACE_CHROME_PORT || 9222);
-    const base = `http://127.0.0.1:${port}`;
-    const running = await fetch(`${base}/json/version`).then((r) => r.ok).catch(() => false);
-    if (!running) {
-      const bin = process.env.CURUPIRA_WORKSPACE_CHROME_BIN || findChromeBinary();
-      if (!bin) return { success: false, error: 'not connected to Chrome and no Chrome binary found to launch' };
-      const profile =
-        process.env.CURUPIRA_WORKSPACE_CHROME_PROFILE || path.join(os.homedir(), '.config', 'curupira', 'chrome-workspace');
-      const child = spawn(
-        bin,
-        [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--new-window', ...tabs.map((t) => t.url)],
-        { detached: true, stdio: 'ignore' },
-      );
-      child.unref();
-      const up = await waitForCDP('127.0.0.1', port, 30000);
-      return {
-        success: up,
-        ...(up ? {} : { error: `launched ${bin} but its DevTools port ${port} never answered` }),
-        data: { workspace, launched: { bin, port, profile }, opened: tabs.map((t) => ({ key: t.key, url: t.url })), failed: [], next: 'chrome_connect to drive these tabs with site_read / site_goto' },
-      };
-    }
-    const opened: Array<{ key: string; url: string; targetId: string }> = [];
-    const failed: Array<{ key: string; url: string; error: string }> = [];
-    for (const t of tabs) {
-      try {
-        const r = await fetch(`${base}/json/new?${encodeURI(t.url)}`, { method: 'PUT' });
-        if (!r.ok) throw new Error(`HTTP ${r.status}`);
-        const j = (await r.json()) as { id?: string };
-        opened.push({ key: t.key, url: t.url, targetId: j.id ?? '' });
-      } catch (err) {
-        failed.push({ key: t.key, url: t.url, error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-    return { success: failed.length === 0, data: { workspace, opened, failed } };
+    const port = this.chromePort();
+    const bin = process.env.CURUPIRA_WORKSPACE_CHROME_BIN || findChromeBinary();
+    if (!bin) return { success: false, error: 'not connected to Chrome and no Chrome binary found to launch' };
+    const profile =
+      process.env.CURUPIRA_WORKSPACE_CHROME_PROFILE || path.join(os.homedir(), '.config', 'curupira', 'chrome-workspace');
+    const plan = planTabs({ desired: tabs, open: [], ledger: { targets: {}, opens: {} }, routes: compileRoutes(this.bundle.sites), budget: this.budget(), now: Date.now(), closeDuplicates: false });
+    const child = spawn(
+      bin,
+      [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--new-window', ...plan.open.map((t) => t.url)],
+      { detached: true, stdio: 'ignore' },
+    );
+    child.unref();
+    const up = await waitForCDP('127.0.0.1', port, 30000);
+    return {
+      success: up,
+      ...(up ? {} : { error: `launched ${bin} but its DevTools port ${port} never answered` }),
+      data: {
+        workspace,
+        launched: { bin, port, profile },
+        opened: plan.open.map((t) => ({ key: t.key, url: t.url })),
+        ...(plan.overBudget.length > 0 ? { refused: { outcome: 'refused', reason: 'tab-budget', not_opened: plan.overBudget } } : {}),
+        failed: [],
+        next: 'chrome_connect to drive these tabs with site_read / site_goto',
+      },
+    };
   }
 
   private loadBundle(): void {
@@ -1164,11 +1297,49 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     await new Promise((r) => setTimeout(r, 1200));
   }
 
-  private async evaluate(expression: string): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  private declare awakeAt: number;
+
+  private chromePort(): number {
+    return Number(process.env.CURUPIRA_WORKSPACE_CHROME_PORT || '9222');
+  }
+
+  private budget(): Budget {
+    return budgetOf(this.bundle);
+  }
+
+  private failed(r: { error: string; frozen?: boolean }): { success: false; error: string; data?: unknown } {
+    if (!r.frozen) return { success: false, error: r.error };
+    return { success: false, error: r.error, data: { outcome: 'blind', state: 'frozen', next: FROZEN_NEXT(this.chromePort()) } };
+  }
+
+  private async awake(): Promise<{ ok: true } | { ok: false; error: string; frozen: true }> {
+    if (Date.now() - (this.awakeAt ?? 0) < 2000) return { ok: true };
+    const client = this.chromeService.getCurrentClient();
+    if (!client) return { ok: true };
+    const ms = this.budget().cdp_timeout_ms;
+    const probe = () => withDeadline(client.send('Runtime.evaluate', { expression: '1', returnByValue: true }).catch(() => null), ms);
+    let r = await probe();
+    if (!r.ok) {
+      try {
+        const pages = (await getJson<OpenPage[]>(`http://127.0.0.1:${this.chromePort()}/json/list`)).filter(isCountable);
+        if (pages[0]) await fetch(`http://127.0.0.1:${this.chromePort()}/json/activate/${pages[0].id}`, { signal: AbortSignal.timeout(2000) });
+      } catch {
+        /* activation is best effort; the retry says whether it worked */
+      }
+      r = await probe();
+    }
+    if (!r.ok) return { ok: false, frozen: true, error: `frozen: the tab did not answer CDP within ${ms} ms, even after activating it` };
+    this.awakeAt = Date.now();
+    return { ok: true };
+  }
+
+  private async evaluate(expression: string): Promise<{ ok: true; value: unknown } | { ok: false; error: string; frozen?: boolean }> {
     const client = this.chromeService.getCurrentClient();
     if (!client) {
       return { ok: false, error: NOT_CONNECTED };
     }
+    const awake = await this.awake();
+    if (!awake.ok) return awake;
     try {
       const res = await client.send<any>('Runtime.evaluate', {
         expression,
@@ -1575,7 +1746,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     // Running a profile's JavaScript against a different page is at best
     // nonsense and at worst a click on a stranger's control.
     const urlRes = await this.evaluate('window.location.href');
-    if (!urlRes.ok) return { success: false, error: urlRes.error };
+    if (!urlRes.ok) return this.failed(urlRes);
     const url = String(urlRes.value ?? '');
 
     if (spec.kind !== 'goto' && !(site.match ?? []).some((m) => m && url.includes(m))) {
@@ -1597,7 +1768,7 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     }
 
     const evalRes = await this.evaluate(spec.js ?? '');
-    if (!evalRes.ok) return { success: false, error: evalRes.error };
+    if (!evalRes.ok) return this.failed(evalRes);
     const value = evalRes.value ?? null;
     return {
       success: true,

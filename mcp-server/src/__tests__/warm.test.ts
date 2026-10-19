@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-import { currentPosture, inWindow, isSignedOut, missingTabs, setPosture, warm } from '../warm/warm.js';
+import { currentPosture, inWindow, isSignedOut, setPosture, warm } from '../warm/warm.js';
 
 describe('warm', () => {
   afterEach(() => {
@@ -14,6 +14,7 @@ describe('warm', () => {
     expect(isSignedOut('https://accounts.google.com/v3/signin/identifier?x')).toBe(true);
     expect(isSignedOut('https://splunk.example.invalid/en-US/account/login?return_to=/')).toBe(true);
     expect(isSignedOut('https://app.example.invalid/dashboard/abc')).toBe(false);
+    expect(isSignedOut('https://app.slack.com/workspace-signin?redir=%2Fclient')).toBe(true);
   });
 
   it('runs only inside the posture hours and days', () => {
@@ -24,24 +25,6 @@ describe('warm', () => {
     expect(inWindow(sunNoon, [8, 19], [1, 2, 3, 4, 5])).toBe(false);
     expect(inWindow(tueNight, [8, 19], [1, 2, 3, 4, 5])).toBe(false);
     expect(inWindow(sunNoon)).toBe(true);
-  });
-
-  it('treats a tab as present when a page on the same host and first path segment is open', () => {
-    const tabs = [
-      { key: 'dd', url: 'https://app.example.invalid/monitors/manage?q=x' },
-      { key: 'sp', url: 'https://logs.example.invalid/en-US/app/search/search?q=y' },
-    ];
-    const open = [{ id: '1', type: 'page', url: 'https://app.example.invalid/monitors/triggered' }];
-    expect(missingTabs(tabs, open).map((t) => t.key)).toEqual(['sp']);
-  });
-
-  it('opens one tab per host and first path segment across workspaces', () => {
-    const tabs = [
-      { key: 'a', url: 'https://logs.example.invalid/en-US/app/search/x' },
-      { key: 'b', url: 'https://logs.example.invalid/en-US/app/search/y' },
-      { key: 'c', url: 'https://app.example.invalid/dashboard/1' },
-    ];
-    expect(missingTabs(tabs, []).map((t) => t.key)).toEqual(['a', 'c']);
   });
 
   it('persists the posture and does nothing when it is off', async () => {

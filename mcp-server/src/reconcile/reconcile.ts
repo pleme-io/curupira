@@ -12,7 +12,6 @@ import {
   hostOf,
   inWindow,
   isSignedOut,
-  missingTabs,
   postureTabs,
   stateFile,
   warm,
@@ -21,6 +20,9 @@ import {
   type WarmTab,
   type WarmTarget,
 } from '../warm/warm.js';
+import { converge } from '../guard/converge.js';
+import { enforceMemory, type MemoryEvent, type MemorySample } from '../guard/memory.js';
+import { budgetOf, type Budget } from '../guard/tabs.js';
 
 export const BUILTIN_ALLOW = ['devtools://', 'chrome-extension://', 'chrome://', 'about:blank'];
 
@@ -40,7 +42,7 @@ export type StrayBook = Record<string, Stray>;
 export interface ReconcileReport {
   at: number;
   posture: string;
-  state: 'idle' | 'converged' | 'converging' | 'blind' | 'held';
+  state: 'idle' | 'converged' | 'converging' | 'limited' | 'blind' | 'held';
   reason?: string;
   tick_seconds: number;
   desired: number;
@@ -49,6 +51,15 @@ export interface ReconcileReport {
   strays: Stray[];
   newlyQuestioned: string[];
   closed: string[];
+  pages?: number;
+  max_tabs?: number;
+  deduped?: Array<{ id: string; url: string; why: string }>;
+  signedOut?: string[];
+  signedOutHosts?: string[];
+  overBudget?: string[];
+  flapping?: string[];
+  memoryOver?: { chrome_mb: number; budget_mb: number };
+  memory?: { state: MemorySample['state']; pages: number; chrome_mb?: number; largest?: { url: string; heap_mb?: number }; frozen: number; events: MemoryEvent[] };
   warm?: WarmReport;
   errors: string[];
 }
@@ -149,24 +160,55 @@ function notify(posture: Posture, title: string, body: string, errors: string[])
   }
 }
 
+async function guardMemory(report: ReconcileReport, port: number, budget: Budget, now: Date): Promise<void> {
+  try {
+    const { sample, events } = await enforceMemory(port, budget, now.getTime());
+    if (!sample) return;
+    const largest = sample.tabs.find((t) => t.heap_mb !== undefined);
+    report.memory = {
+      state: sample.state,
+      pages: sample.pages,
+      chrome_mb: sample.chrome.rss_mb,
+      largest: largest ? { url: largest.url, heap_mb: largest.heap_mb } : undefined,
+      frozen: sample.tabs.filter((t) => t.state === 'frozen').length,
+      events,
+    };
+  } catch (err) {
+    report.errors.push(`memory: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileReport> {
   const now = opts.now ?? new Date();
   const name = currentPosture();
   const report: ReconcileReport = { at: now.getTime(), posture: name, state: 'idle', tick_seconds: 60, desired: 0, missing: [], opened: [], strays: [], newlyQuestioned: [], closed: [], errors: [] };
-  if (name === OFF) return settle({ ...report, reason: 'posture is off' });
-  const bundle = buildStack(opts.stackBin ?? (process.env.CURUPIRA_STACK_BIN || 'curupira-stack'));
-  const posture = (bundle.postures ?? []).find((p) => p.name === name);
-  if (!posture) return settle({ ...report, reason: `posture '${name}' is not in the stack`, errors: [`unknown posture '${name}'`] });
+  let bundle: ReturnType<typeof buildStack> | null = null;
+  try {
+    bundle = buildStack(opts.stackBin ?? (process.env.CURUPIRA_STACK_BIN || 'curupira-stack'));
+  } catch (err) {
+    if (name !== OFF) throw err;
+  }
+  const budget = budgetOf(bundle);
+  if (name === OFF) {
+    if (budget.enabled && takeLease(60, now.getTime())) await guardMemory(report, opts.port, budget, now);
+    return settle({ ...report, reason: 'posture is off' });
+  }
+  const posture = (bundle?.postures ?? []).find((p) => p.name === name);
+  if (!bundle || !posture) return settle({ ...report, reason: `posture '${name}' is not in the stack`, errors: [`unknown posture '${name}'`] });
   const rc = posture.reconcile;
   if (!rc) return settle({ ...report, reason: `posture '${name}' declares no reconcile block` });
   report.tick_seconds = rc.tick_seconds;
   if (!takeLease(rc.tick_seconds, now.getTime())) return { ...report, state: 'held', reason: 'another curupira holds the reconcile lease' };
-  if (!inWindow(now, posture.hours, posture.days)) return settle({ ...report, reason: `outside posture '${name}' hours` });
+  if (!inWindow(now, posture.hours, posture.days)) {
+    if (budget.enabled) await guardMemory(report, opts.port, budget, now);
+    return settle({ ...report, reason: `outside posture '${name}' hours` });
+  }
 
   const profile = opts.profile ?? defaultProfile();
   const base = `http://127.0.0.1:${opts.port}`;
   const desired = postureTabs(bundle, posture);
   report.desired = desired.length;
+  report.max_tabs = budget.max_tabs;
 
   if (rc.tabs === 'enforce') {
     const chrome = await ensureChrome(opts.port, profile, opts.chromeBin);
@@ -174,25 +216,28 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
   }
   let targets: WarmTarget[];
   try {
-    targets = (await (await fetch(`${base}/json/list`)).json()) as WarmTarget[];
+    targets = (await (await fetch(`${base}/json/list`, { signal: AbortSignal.timeout(5000) })).json()) as WarmTarget[];
   } catch (err) {
     return settle({ ...report, state: 'blind', reason: `Chrome on port ${opts.port} did not answer`, errors: [String(err)] });
   }
 
+  if (budget.enabled) await guardMemory(report, opts.port, budget, now);
+
   if (rc.tabs !== 'off') {
-    const missing = missingTabs(desired, targets);
-    report.missing = missing.map((t) => t.key);
-    if (rc.tabs === 'enforce' && missing.length > 0) {
-      const version = (await (await fetch(`${base}/json/version`)).json()) as { webSocketDebuggerUrl: string };
-      for (const t of missing) {
-        try {
-          await cdp(version.webSocketDebuggerUrl, 'Target.createTarget', { url: t.url, background: true });
-          report.opened.push(t.key);
-        } catch (err) {
-          report.errors.push(`open ${t.key}: ${err instanceof Error ? err.message : String(err)}`);
-        }
-      }
-    }
+    const tabs = await converge({ port: opts.port, desired, sites: bundle.sites ?? [], budget, open: targets, enforce: rc.tabs === 'enforce', now: now.getTime() });
+    const plan = tabs.plan;
+    report.missing = [...plan.open.map((t) => t.key), ...plan.signedOut, ...plan.overBudget, ...plan.flapping];
+    report.opened = tabs.opened;
+    report.pages = plan.pages + tabs.opened.length;
+    report.deduped = tabs.deduped;
+    report.signedOut = plan.signedOut;
+    report.signedOutHosts = plan.signedOutHosts;
+    report.overBudget = plan.overBudget;
+    report.flapping = plan.flapping;
+    if (tabs.memoryOver) report.memoryOver = tabs.memoryOver;
+    report.errors.push(...tabs.errors);
+    const gone = new Set(tabs.deduped.map((d) => d.id));
+    targets = targets.filter((t) => !gone.has(t.id));
   }
 
   if (rc.strays !== 'ignore') {
@@ -221,13 +266,21 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
   }
 
   try {
-    report.warm = await warm({ posture: name, port: opts.port, profile, chromeBin: opts.chromeBin, stackBin: opts.stackBin, now });
+    report.warm = await warm({ posture: name, port: opts.port, profile, chromeBin: opts.chromeBin, stackBin: opts.stackBin, now, open: false });
   } catch (err) {
     report.errors.push(`warm: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   const open = report.strays.filter((s) => s.verdict === 'questioned').length;
-  report.state = report.missing.length === 0 && open === 0 ? 'converged' : 'converging';
+  const actionable = report.missing.length - (report.signedOut?.length ?? 0) - (report.overBudget?.length ?? 0) - (report.flapping?.length ?? 0) - report.opened.length;
+  report.state = open > 0 || actionable > 0 || report.opened.length > 0 ? 'converging' : report.missing.length > report.opened.length ? 'limited' : 'converged';
+  if (report.state === 'limited') {
+    report.reason = [
+      report.signedOut?.length ? `${report.signedOut.length} tab(s) wait on a sign-in at ${report.signedOutHosts?.join(', ')}` : '',
+      report.overBudget?.length ? `${report.overBudget.length} tab(s) over the ${budget.max_tabs}-tab budget${report.memoryOver ? ' or the Chrome memory budget' : ''}` : '',
+      report.flapping?.length ? `${report.flapping.length} tab(s) reopened too often in the last hour: ${report.flapping.join(', ')}` : '',
+    ].filter(Boolean).join('; ');
+  }
   return settle(report);
 }
 

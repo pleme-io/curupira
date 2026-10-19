@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use curupira_sites::{Bundle, FormSignin, Posture, Profile, Reconcile, StrayMode, TabMode, StackProvenance, Workspace, WorkspaceTab};
+use curupira_sites::{Budget, Bundle, FormSignin, Posture, Profile, Reconcile, StrayMode, TabMode, StackProvenance, Workspace, WorkspaceTab};
 use figment::value::magic::RelativePathBuf;
 use serde::Deserialize;
 
@@ -16,6 +16,8 @@ pub struct Stack {
     pub workspaces: BTreeMap<String, WorkspaceEntry>,
     #[serde(default)]
     pub postures: BTreeMap<String, PostureEntry>,
+    #[serde(default)]
+    pub budget: Budget,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -240,6 +242,14 @@ pub fn compile(stack: &Stack, layers: &[PathBuf]) -> Bundle {
         }
     }
 
+    bundle.budget = Some(match stack.budget.check() {
+        Ok(()) => stack.budget.clone(),
+        Err(e) => {
+            refused.push(format!("{e}; the default budget holds"));
+            Budget::default()
+        }
+    });
+
     bundle.stack = Some(StackProvenance {
         layers: layers.iter().map(|p| p.display().to_string()).collect(),
         refused,
@@ -268,6 +278,10 @@ fn check_posture(name: &str, p: &PostureEntry, workspaces: &[&str]) -> Result<()
     Ok(())
 }
 
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
 fn resolve_tab(key: &str, tab: &TabEntry, sites: &BTreeMap<&str, &Profile>) -> Result<WorkspaceTab, String> {
     match (&tab.site, &tab.url) {
         (Some(_), Some(_)) => Err("names both `site` and `url`; pick one".into()),
@@ -287,14 +301,18 @@ fn resolve_tab(key: &str, tab: &TabEntry, sites: &BTreeMap<&str, &Profile>) -> R
                     let Some(pg) = p.pages.iter().find(|x| &x.name == page) else {
                         return Err(format!("site '{site}' has no page '{page}'"));
                     };
+                    let bounded = match &pg.window {
+                        Some(w) => w.bound(tab.params.get(w.knob()).map(String::as_str), now_ms()).map_err(|e| e.to_string())?,
+                        None => curupira_sites::Bounded::default(),
+                    };
                     let mut route = pg.route.clone();
-                    for (k, v) in &tab.params {
+                    for (k, v) in tab.params.iter().chain(bounded.substitute.iter()) {
                         route = route.replace(&format!("{{{k}}}"), v);
                     }
                     if let Some(open) = route.find('{') {
                         return Err(format!("route '{}' still has an unfilled param at '{}'", pg.route, &route[open..]));
                     }
-                    format!("{base}{route}")
+                    bounded.apply(&format!("{base}{route}"))
                 }
             };
             Ok(WorkspaceTab { key: key.into(), url, site: Some(site.clone()), page: tab.page.clone() })
@@ -353,6 +371,48 @@ mod tests {
         assert_eq!(warm.reconcile.as_ref().map(|r| (r.tabs, r.strays, r.tick_seconds, r.allow.clone())), Some((TabMode::Enforce, StrayMode::Question, 60, vec!["chrome://".to_string()])));
         let refused = &bundle.stack.as_ref().unwrap().refused;
         assert!(refused.iter().any(|r| r.contains("posture 'broken'") && r.contains("nope")), "{refused:?}");
+    }
+
+    const WINDOWED: &str = "id: logs\nbase_url: https://logs.example.invalid/\nmatch: [logs.example.invalid]\npages:\n  - name: search\n    route: /app/search?q={q}&earliest={earliest}\n    ready: [!url-contains \"/app/search\"]\n    window: { kind: relative, param: earliest, default: -24h }\n  - name: dash\n    route: /d/{id}\n    ready: [!url-contains \"/d/\"]\n    window: { kind: epoch-ms, from: from_ts, to: to_ts, default: -1h, max: -7d }\n";
+
+    fn windowed(tabs: &str) -> Bundle {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("logs.yaml"), WINDOWED).unwrap();
+        let layer = root.path().join("curupira-sites.yaml");
+        fs::write(&layer, format!("sites:\n  logs: {{ file: logs.yaml }}\nworkspaces:\n  w:\n    tabs:\n{tabs}")).unwrap();
+        let paths = vec![layer];
+        compile(&load(&paths).unwrap(), &paths)
+    }
+
+    #[test]
+    fn a_windowed_tab_gets_the_default_bound_and_an_unbounded_one_is_refused_alone() {
+        let b = windowed("      fill: { site: logs, page: search, params: { q: err } }\n      keep: { site: logs, page: search, params: { q: err, earliest: -15m } }\n      all: { site: logs, page: search, params: { q: err, earliest: \"0\" } }\n      dash: { site: logs, page: dash, params: { id: abc } }\n");
+        let urls: BTreeMap<&str, &str> = b.workspaces[0].tabs.iter().map(|t| (t.key.as_str(), t.url.as_str())).collect();
+        assert_eq!(urls["fill"], "https://logs.example.invalid/app/search?q=err&earliest=-24h");
+        assert_eq!(urls["keep"], "https://logs.example.invalid/app/search?q=err&earliest=-15m");
+        assert!(urls["dash"].starts_with("https://logs.example.invalid/d/abc?from_ts="), "{}", urls["dash"]);
+        assert!(!urls.contains_key("all"));
+        let refused = &b.stack.as_ref().unwrap().refused;
+        assert!(refused.iter().any(|r| r.contains("tab 'all'") && r.contains("'0'")), "{refused:?}");
+    }
+
+    #[test]
+    fn the_budget_defaults_merges_per_field_and_a_bad_one_falls_back_to_the_default() {
+        let b = windowed("      dash: { site: logs, page: dash, params: { id: abc } }\n");
+        assert_eq!(b.budget, Some(Budget::default()));
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("a.yaml");
+        let c = root.path().join("c.yaml");
+        fs::write(&a, "budget: { max_tabs: 20 }\n").unwrap();
+        fs::write(&c, "budget: { tab_memory_mb: 1024 }\n").unwrap();
+        let paths = vec![a.clone(), c];
+        let got = compile(&load(&paths).unwrap(), &paths).budget.unwrap();
+        assert_eq!((got.max_tabs, got.tab_memory_mb, got.chrome_memory_mb), (20, 1024, 8192));
+        fs::write(&a, "budget: { max_tabs: 0 }\n").unwrap();
+        let paths = vec![a];
+        let bad = compile(&load(&paths).unwrap(), &paths);
+        assert_eq!(bad.budget, Some(Budget::default()));
+        assert!(bad.stack.unwrap().refused.iter().any(|r| r.contains("max_tabs")));
     }
 
     #[test]

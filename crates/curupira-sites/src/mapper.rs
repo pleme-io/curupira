@@ -400,7 +400,7 @@ pub fn draft_profile(id: &str, base_url: &str, surveys: &[PageSurvey]) -> Result
             .map(|sel| vec![ReadySignal::SelectorPresent(sel)])
             .unwrap_or_default();
 
-        pages.push(Page { name, route, tab: None, ready, reads, actions, events: Vec::new() });
+        pages.push(Page { name, route, tab: None, ready, reads, actions, events: Vec::new(), window: None });
     }
 
     Ok(ConsoleProfile {

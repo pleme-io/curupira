@@ -4,6 +4,48 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { findStrays, lastReport, mergeStrays, reconcileOnce, reportFile, takeLease } from '../reconcile/reconcile.js';
+import { setPosture } from '../warm/warm.js';
+import { fakeDevtools } from './helpers/fake-devtools.js';
+
+const DD = {
+  id: 'dd',
+  base_url: 'https://app.dd.invalid',
+  match: ['app.dd.invalid'],
+  tools: [
+    { kind: 'goto', page: 'apm', url_template: 'https://app.dd.invalid/apm/home' },
+    { kind: 'goto', page: 'dashboard', url_template: 'https://app.dd.invalid/dashboard/{id}' },
+    { kind: 'goto', page: 'incidents', url_template: 'https://app.dd.invalid/incidents' },
+  ],
+};
+
+function stackWith(bundle: unknown): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-stack-'));
+  const bin = path.join(dir, 'curupira-stack');
+  fs.writeFileSync(bin, `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(bundle))});\n`);
+  fs.chmodSync(bin, 0o755);
+  return bin;
+}
+
+function posture(budget: Record<string, unknown> = {}) {
+  return {
+    schema_version: 2,
+    sites: [DD],
+    budget,
+    workspaces: [
+      {
+        name: 'oncall',
+        tabs: [
+          { key: 'apm', url: 'https://app.dd.invalid/apm/home', site: 'dd', page: 'apm' },
+          { key: 'tenant', url: 'https://app.dd.invalid/dashboard/abc', site: 'dd', page: 'dashboard' },
+          { key: 'gateway', url: 'https://app.dd.invalid/dashboard/xyz', site: 'dd', page: 'dashboard' },
+          { key: 'incidents', url: 'https://app.dd.invalid/incidents', site: 'dd', page: 'incidents' },
+          { key: 'status', url: 'https://status.example.invalid/' },
+        ],
+      },
+    ],
+    postures: [{ name: 'warm', workspaces: ['oncall'], interval_minutes: 30, reconcile: { tick_seconds: 60, tabs: 'enforce', strays: 'question' } }],
+  };
+}
 
 const page = (id: string, url: string) => ({ id, type: 'page', url });
 
@@ -35,6 +77,66 @@ describe('reconcile', () => {
     const gone = mergeStrays({ ...again.book, 'old.example.invalid': { ...again.book['news.example.invalid'], host: 'old.example.invalid', verdict: 'questioned' } }, [], 3);
     expect(Object.keys(gone.book)).toEqual(['news.example.invalid']);
   });
+
+  it('a signed-out console stays one tab across ticks instead of reopening every tick', async () => {
+    process.env.CURUPIRA_POSTURE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-')), 'posture');
+    setPosture('warm');
+    const chrome = await fakeDevtools((u) => (u.includes('app.dd.invalid') ? `https://app.dd.invalid/account/login?next=${encodeURIComponent(new URL(u).pathname)}` : u));
+    try {
+      const stackBin = stackWith(posture());
+      const states: string[] = [];
+      for (let i = 0; i < 6; i++) {
+        const r = await reconcileOnce({ port: chrome.port, stackBin, now: new Date(Date.UTC(2026, 9, 19, 12, i)) });
+        states.push(r.state);
+      }
+      expect(chrome.created.length).toBeLessThanOrEqual(4);
+      expect(chrome.targets.map((t) => t.url).sort()).toEqual([
+        expect.stringContaining('https://app.dd.invalid/account/login?next='),
+        'https://status.example.invalid/',
+      ]);
+      const last = lastReport();
+      expect(last?.state).toBe('limited');
+      expect(last?.signedOutHosts).toContain('app.dd.invalid');
+      expect(last?.opened).toEqual([]);
+      expect(states.at(-1)).toBe('limited');
+    } finally {
+      await chrome.close();
+    }
+  }, 30000);
+
+  it('caps opened tabs at the budget and reports the rest', async () => {
+    process.env.CURUPIRA_POSTURE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-')), 'posture');
+    setPosture('warm');
+    const chrome = await fakeDevtools();
+    try {
+      const r = await reconcileOnce({ port: chrome.port, stackBin: stackWith(posture({ max_tabs: 2 })), now: new Date(Date.UTC(2026, 9, 19, 12, 0)) });
+      expect(r.opened, JSON.stringify(r)).toEqual(['apm', 'tenant']);
+      expect(r.overBudget).toEqual(['incidents', 'status']);
+      expect(chrome.targets).toHaveLength(2);
+      const again = await reconcileOnce({ port: chrome.port, stackBin: stackWith(posture({ max_tabs: 2 })), now: new Date(Date.UTC(2026, 9, 19, 12, 1)) });
+      expect(again.opened).toEqual([]);
+      expect(again.state).toBe('limited');
+    } finally {
+      await chrome.close();
+    }
+  }, 30000);
+
+  it('reloads a tab over its memory budget, then closes it when it grows back', async () => {
+    process.env.CURUPIRA_POSTURE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-')), 'posture');
+    const chrome = await fakeDevtools();
+    chrome.targets.push({ id: 'big', type: 'page', url: 'https://logs.example.invalid/search', heapMb: 4000 });
+    try {
+      const stackBin = stackWith({ schema_version: 2, sites: [], budget: { tab_memory_mb: 1000, chrome_memory_mb: 100000 } });
+      const first = await reconcileOnce({ port: chrome.port, stackBin, now: new Date(Date.UTC(2026, 9, 19, 12, 0)) });
+      expect(first.memory?.events.map((e) => [e.id, e.kind, e.action])).toEqual([['big', 'tab-over', 'reloaded']]);
+      chrome.targets[0].heapMb = 4000;
+      const second = await reconcileOnce({ port: chrome.port, stackBin, now: new Date(Date.UTC(2026, 9, 19, 12, 2)) });
+      expect(second.memory?.events.map((e) => [e.id, e.action])).toEqual([['big', 'closed']]);
+      expect(chrome.targets).toHaveLength(0);
+    } finally {
+      await chrome.close();
+    }
+  }, 30000);
 
   it('lets one curupira hold the reconcile lease at a time', () => {
     process.env.CURUPIRA_POSTURE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'lease-')), 'posture');

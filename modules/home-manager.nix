@@ -50,7 +50,7 @@ let
     sites =
       (lib.mapAttrs (name: value: { file = "${profileFile name value}"; }) cfg.sites)
       // (lib.mapAttrs (_: file: { file = "${file}"; }) cfg.siteFiles);
-    inherit (cfg.stack) workspaces postures;
+    inherit (cfg.stack) workspaces postures budget;
   });
   bundlePath = if hasProfiles then builtBundle else null;
 in
@@ -201,6 +201,23 @@ in
           A tab names `site` (+ optional `page`, `params`) or a plain `url`.
           Tabs are keyed so a higher layer can add one, change one field of one,
           or set `enabled = false` on one.
+        '';
+      };
+
+      budget = lib.mkOption {
+        type = lib.types.attrsOf lib.types.anything;
+        default = { };
+        example = lib.literalExpression ''
+          { max_tabs = 30; tab_memory_mb = 1536; chrome_memory_mb = 8192; over = "reload"; }
+        '';
+        description = ''
+          Caps on the curupira Chrome, merged per field over the defaults
+          (`enabled` true, `max_tabs` 30, `tab_memory_mb` 1536,
+          `chrome_memory_mb` 8192, `sample_seconds` 60, `cdp_timeout_ms` 4000,
+          `over` reload|close). Workspace opens and posture reconciles refuse
+          past `max_tabs`; the memory watchdog reloads, then closes, a tab over
+          `tab_memory_mb` or the largest tab when Chrome is over
+          `chrome_memory_mb`. `enabled = false` configures every cap off.
         '';
       };
 

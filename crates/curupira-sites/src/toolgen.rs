@@ -79,6 +79,8 @@ pub struct ToolSpec {
     /// as trusted input, then this says how to submit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<CompiledInput>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<crate::window::TimeWindow>,
 }
 
 /// A typing action's submit step, compiled.
@@ -235,6 +237,51 @@ pub struct Bundle {
     pub postures: Vec<Posture>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<StackProvenance>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget: Option<Budget>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OverBudget {
+    Reload,
+    Close,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Budget {
+    pub enabled: bool,
+    pub max_tabs: u32,
+    pub tab_memory_mb: u32,
+    pub chrome_memory_mb: u32,
+    pub sample_seconds: u32,
+    pub cdp_timeout_ms: u32,
+    pub over: OverBudget,
+}
+
+impl Budget {
+    pub fn check(&self) -> std::result::Result<(), String> {
+        if self.max_tabs == 0 {
+            return Err("budget.max_tabs must be at least 1".into());
+        }
+        if self.tab_memory_mb == 0 || self.chrome_memory_mb < self.tab_memory_mb {
+            return Err(format!("budget.chrome_memory_mb {} must be at least budget.tab_memory_mb {} (and both above 0)", self.chrome_memory_mb, self.tab_memory_mb));
+        }
+        if self.sample_seconds < 10 {
+            return Err(format!("budget.sample_seconds {} must be at least 10", self.sample_seconds));
+        }
+        if self.cdp_timeout_ms < 500 {
+            return Err(format!("budget.cdp_timeout_ms {} must be at least 500", self.cdp_timeout_ms));
+        }
+        Ok(())
+    }
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Budget { enabled: true, max_tabs: 30, tab_memory_mb: 1536, chrome_memory_mb: 8192, sample_seconds: 60, cdp_timeout_ms: 4000, over: OverBudget::Reload }
+    }
 }
 
 /// A named operating state (e.g. `off`, `warm`, `incident`): which workspaces
@@ -443,6 +490,7 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
                 effect: None,
                 describes: None,
                 input: None,
+                window: None,
             });
         }
         for a in &page.actions {
@@ -480,6 +528,7 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
                 effect: Some(a.effect),
                 describes: Some(a.describes.clone()),
                 input: a.input.as_ref().map(|i| compile_input(i)).transpose()?,
+                window: None,
             });
         }
     }
@@ -488,12 +537,19 @@ pub fn generate(profile: &ConsoleProfile) -> Result<Vec<ToolSpec>> {
 
 fn goto_tool(profile: &ConsoleProfile, page: &Page) -> Result<ToolSpec> {
     let params = route_params(&page.route);
+    let mut json_schema = params_schema(&params);
+    if let Some(w) = &page.window {
+        let knob = w.knob().to_string();
+        json_schema["properties"][&knob] = serde_json::json!({ "type": "string", "description": format!("bounded time window back from now, default {}", w.default_span()) });
+        let required: Vec<serde_json::Value> = json_schema["required"].as_array().cloned().unwrap_or_default().into_iter().filter(|r| r != &serde_json::json!(knob)).collect();
+        json_schema["required"] = serde_json::Value::Array(required);
+    }
     Ok(ToolSpec {
         name: tool_name(&profile.id, &page.name, "goto", ""),
         description: format!("Navigate to the '{}' page", page.name),
         kind: ToolKind::Goto,
         page: page.name.clone(),
-        json_schema: params_schema(&params),
+        json_schema,
         // A waiter, not a probe. Round F1 measured why: a probe nobody acts
         // on let reads run against the previous page's DOM.
         program: Program::Js { js: emit::emit_ready_wait(&page.ready, READY_TIMEOUT_MS, READY_POLL_MS)? },
@@ -502,6 +558,7 @@ fn goto_tool(profile: &ConsoleProfile, page: &Page) -> Result<ToolSpec> {
         effect: None,
         describes: None,
         input: None,
+        window: page.window.clone(),
     })
 }
 
@@ -528,6 +585,7 @@ pub fn generate_app(profile: &AppProfile) -> Vec<ToolSpec> {
                 effect: None,
                 describes: None,
                 input: None,
+                window: None,
             });
         }
         for a in &view.actions {
@@ -574,6 +632,7 @@ fn app_act_tool(profile: &AppProfile, view: &View, a: &crate::app::AxAction) -> 
         effect: Some(a.effect),
         describes: Some(a.describes.clone()),
         input: None,
+        window: None,
     }
 }
 
@@ -593,6 +652,7 @@ fn app_goto_tool(profile: &AppProfile, view: &View) -> ToolSpec {
         effect: None,
         describes: None,
         input: None,
+        window: None,
     }
 }
 
@@ -610,6 +670,7 @@ pub fn generate_desktop(profile: &DesktopProfile) -> Vec<ToolSpec> {
         effect: None,
         describes: None,
         input: None,
+        window: None,
     };
     let mut out = Vec::new();
     for v in &profile.views {

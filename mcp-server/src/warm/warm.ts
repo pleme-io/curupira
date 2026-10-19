@@ -4,10 +4,15 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { findChromeBinary, waitForCDP } from '../mcp/tools/providers/chrome-launch-tools.factory.js';
+import { cdpCall } from '../guard/cdp.js';
+import { converge, type ConvergeReport } from '../guard/converge.js';
+import { budgetOf, hostOf, isSignedOut, type Budget, type GuardSite } from '../guard/tabs.js';
 
 export interface WarmTab {
   key: string;
   url: string;
+  site?: string;
+  page?: string;
 }
 
 export interface WarmWorkspace {
@@ -50,11 +55,14 @@ export interface WarmOptions {
   now?: Date;
   stackBin?: string;
   force?: boolean;
+  open?: boolean;
 }
 
 export interface StackBundle {
+  sites?: GuardSite[];
   workspaces?: WarmWorkspace[];
   postures?: Posture[];
+  budget?: Partial<Budget>;
 }
 
 export const OFF = 'off';
@@ -96,30 +104,11 @@ export interface WarmReport {
   signedOut: string[];
   refilled: string[];
   notified: boolean;
+  tabs?: ConvergeReport;
   errors: string[];
 }
 
-const SIGNED_OUT_MARKERS = [
-  'accounts.google.com',
-  'id.atlassian.com/login',
-  '/account/login',
-  '/login',
-  '/signin',
-  '/sign-in',
-  '/auth/realms/',
-];
-
-export function isSignedOut(url: string): boolean {
-  return SIGNED_OUT_MARKERS.some((m) => url.includes(m));
-}
-
-export function hostOf(url: string): string {
-  try {
-    return new URL(url).host;
-  } catch {
-    return '';
-  }
-}
+export { hostOf, isSignedOut };
 
 export function inWindow(now: Date, hours?: [number, number], days?: number[]): boolean {
   if (days && days.length > 0 && !days.includes(now.getDay())) return false;
@@ -130,47 +119,10 @@ export function inWindow(now: Date, hours?: [number, number], days?: number[]): 
   return true;
 }
 
-export function presenceKey(url: string): string {
-  try {
-    const u = new URL(url);
-    return `${u.host}/${u.pathname.split('/')[1]}`;
-  } catch {
-    return '';
-  }
-}
-
-export function missingTabs(tabs: WarmTab[], open: WarmTarget[]): WarmTab[] {
-  const seen = new Set(open.filter((t) => t.type === 'page').map((t) => presenceKey(t.url)));
-  return tabs.filter((tab) => {
-    const key = presenceKey(tab.url);
-    if (!key || seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-
 export async function cdp(wsUrl: string, method: string, params: Record<string, unknown>, timeoutMs = 5000): Promise<any> {
-  const ws = new WebSocket(wsUrl);
-  await new Promise<void>((resolve, reject) => {
-    ws.onopen = () => resolve();
-    ws.onerror = () => reject(new Error(`cannot open ${wsUrl}`));
-  });
-  try {
-    return await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`${method} timed out`)), timeoutMs);
-      ws.onmessage = (m) => {
-        const d = JSON.parse(String(m.data));
-        if (d.id === 1) {
-          clearTimeout(timer);
-          d.error ? reject(new Error(d.error.message)) : resolve(d.result);
-        }
-      };
-      ws.send(JSON.stringify({ id: 1, method, params }));
-    });
-  } finally {
-    ws.close();
-  }
+  const r = await cdpCall(wsUrl, method, params, timeoutMs);
+  if (!r.ok) throw new Error(r.error);
+  return r.value;
 }
 
 function formFill(user: string, pass: string, userSel: string, passSel: string): string {
@@ -221,17 +173,13 @@ export async function warm(opts: WarmOptions): Promise<WarmReport> {
     return report;
   }
 
-  const version = (await (await fetch(`${base}/json/version`)).json()) as { webSocketDebuggerUrl: string };
   let targets = (await (await fetch(`${base}/json/list`)).json()) as WarmTarget[];
-  const missing = missingTabs(tabs, targets);
-  report.present = tabs.filter((t) => !missing.includes(t)).map((t) => t.key);
-  for (const t of missing) {
-    try {
-      await cdp(version.webSocketDebuggerUrl, 'Target.createTarget', { url: t.url, background: true });
-      report.opened.push(t.key);
-    } catch (err) {
-      report.errors.push(`open ${t.key}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  if (opts.open !== false) {
+    const tabsReport = await converge({ port: opts.port, desired: tabs, sites: bundle.sites ?? [], budget: budgetOf(bundle), open: targets, enforce: true, now: now.getTime() });
+    report.tabs = tabsReport;
+    report.opened = tabsReport.opened;
+    report.present = Object.keys(tabsReport.plan.present);
+    report.errors.push(...tabsReport.errors);
   }
 
   if (report.opened.length > 0) await new Promise((r) => setTimeout(r, 15000));

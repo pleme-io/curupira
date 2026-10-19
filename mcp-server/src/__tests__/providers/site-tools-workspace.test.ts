@@ -51,10 +51,12 @@ describe('site workspaces', () => {
 
   beforeEach(() => {
     container = createTestContainer();
+    process.env.CURUPIRA_POSTURE_FILE = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'curupira-ws-state-')), 'posture');
+    process.env.CURUPIRA_WORKSPACE_CHROME_PORT = '1';
   });
   afterEach(() => {
     resetTestContainer(container);
-    for (const k of ['CURUPIRA_STACK_BIN', 'CURUPIRA_SITES_BUNDLE', 'CURUPIRA_SITES_SOURCE', 'CURUPIRA_WORKSPACE_CHROME_BIN', 'CURUPIRA_WORKSPACE_CHROME_PORT', 'CURUPIRA_WORKSPACE_CHROME_PROFILE']) {
+    for (const k of ['CURUPIRA_POSTURE_FILE', 'CURUPIRA_STACK_BIN', 'CURUPIRA_SITES_BUNDLE', 'CURUPIRA_SITES_SOURCE', 'CURUPIRA_WORKSPACE_CHROME_BIN', 'CURUPIRA_WORKSPACE_CHROME_PORT', 'CURUPIRA_WORKSPACE_CHROME_PROFILE']) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
@@ -62,7 +64,10 @@ describe('site workspaces', () => {
 
   it('opens one tab per workspace entry through Target.createTarget', async () => {
     const sent: Array<{ method: string; params: unknown }> = [];
-    const client = { send: async (method: string, params: unknown) => (sent.push({ method, params }), { targetId: `t${sent.length}` }) };
+    const client = {
+      send: async (method: string, params: unknown) =>
+        method === 'Target.getTargets' ? { targetInfos: [] } : (sent.push({ method, params }), { targetId: `t${sent.length}` }),
+    };
     const provider = makeProvider(container, { getCurrentClient: () => client }, writeBundle({ workspaces: WORKSPACES }));
     const res = await exec(provider, 'site_workspace_open', { workspace: 'incident' });
     expect(res.success).toBe(true);
@@ -75,7 +80,8 @@ describe('site workspaces', () => {
 
   it('limits the set with `only` and reports a tab that failed without dropping the rest', async () => {
     const client = {
-      send: async (_m: string, p: { url: string }) => {
+      send: async (m: string, p: { url: string }) => {
+        if (m === 'Target.getTargets') return { targetInfos: [] };
         if (p.url.includes('status')) throw new Error('blocked');
         return { targetId: 'x' };
       },
@@ -87,6 +93,45 @@ describe('site workspaces', () => {
     expect(all.data.failed[0]).toMatchObject({ key: 'status', error: 'blocked' });
     const one = await exec(provider, 'site_workspace_open', { workspace: 'incident', only: ['logs'] });
     expect(one.success).toBe(true);
+  });
+
+  it('reuses an open tab for the same page, including one parked on its sign-in redirect, and opens only the rest', async () => {
+    const sent: string[] = [];
+    const infos = [{ targetId: 'L1', type: 'page', url: 'https://logs.example.invalid/account/login?next=%2Fapp%2Fsearch' }];
+    const client = {
+      send: async (m: string, p: { url: string }) => {
+        if (m === 'Target.getTargets') return { targetInfos: infos };
+        sent.push(p.url);
+        infos.push({ targetId: `n${sent.length}`, type: 'page', url: p.url });
+        return { targetId: `n${sent.length}` };
+      },
+    };
+    const provider = makeProvider(container, { getCurrentClient: () => client }, writeBundle({ workspaces: WORKSPACES }));
+    const res = await exec(provider, 'site_workspace_open', { workspace: 'incident' });
+    expect(res.success).toBe(true);
+    expect(res.data.reused).toEqual([{ key: 'logs.example.invalid/app/search', targetId: 'L1' }]);
+    expect(sent).toEqual(['https://status.example.invalid']);
+    const again = await exec(provider, 'site_workspace_open', { workspace: 'incident' });
+    expect(again.data.opened).toEqual([]);
+  });
+
+  it('refuses past the tab budget with a typed answer naming what to close', async () => {
+    const infos = Array.from({ length: 2 }, (_, i) => ({ targetId: `x${i}`, type: 'page', url: `https://news.example.invalid/${i}` }));
+    const client = { send: async (m: string) => (m === 'Target.getTargets' ? { targetInfos: infos } : { targetId: 'n' }) };
+    const provider = makeProvider(container, { getCurrentClient: () => client }, writeBundle({ workspaces: WORKSPACES, budget: { max_tabs: 3 } }));
+    const res = await exec(provider, 'site_workspace_open', { workspace: 'incident' });
+    expect(res.success).toBe(false);
+    expect(res.data.opened.map((o: any) => o.key)).toEqual(['logs']);
+    expect(res.data.refused).toMatchObject({ outcome: 'refused', reason: 'tab-budget', max_tabs: 3, not_opened: ['status'] });
+    expect(res.data.refused.close_first[0]).toMatchObject({ id: 'x0', why: 'outside the requested set' });
+  });
+
+  it('opens nothing when it cannot count the open tabs', async () => {
+    const client = { send: async () => { throw new Error('no browser socket'); } };
+    const provider = makeProvider(container, { getCurrentClient: () => client }, writeBundle({ workspaces: WORKSPACES }));
+    const res = await exec(provider, 'site_workspace_open', { workspace: 'incident' });
+    expect(res.success).toBe(false);
+    expect(res.data.outcome).toBe('blind');
   });
 
   it('launches a headed Chrome with every tab when none is connected or listening', async () => {

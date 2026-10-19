@@ -1,0 +1,179 @@
+[
+  {
+    "name": "relative fills the default when nothing is given",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": null,
+    "now_ms": 1000000000000,
+    "expect": {
+      "substitute": {
+        "earliest": "-24h"
+      },
+      "append": {}
+    }
+  },
+  {
+    "name": "relative keeps a bounded value",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "-15m",
+    "now_ms": 1000000000000,
+    "expect": {
+      "substitute": {
+        "earliest": "-15m"
+      },
+      "append": {}
+    }
+  },
+  {
+    "name": "relative keeps a snapped value",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "-7d@d",
+    "now_ms": 1000000000000,
+    "expect": {
+      "substitute": {
+        "earliest": "-7d@d"
+      },
+      "append": {}
+    }
+  },
+  {
+    "name": "all time (0) is refused",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "0",
+    "now_ms": 1000000000000,
+    "expect": null
+  },
+  {
+    "name": "an empty earliest is refused",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "",
+    "now_ms": 1000000000000,
+    "expect": null
+  },
+  {
+    "name": "a real-time window is refused",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "rt-5m",
+    "now_ms": 1000000000000,
+    "expect": null
+  },
+  {
+    "name": "a zero span is refused",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "-0h",
+    "now_ms": 1000000000000,
+    "expect": null
+  },
+  {
+    "name": "a signed count is refused",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "-+5m",
+    "now_ms": 1000000000000,
+    "expect": null
+  },
+  {
+    "name": "wider than max is refused",
+    "window": {
+      "kind": "relative",
+      "param": "earliest",
+      "default": "-24h",
+      "max": "-30d"
+    },
+    "given": "-90d",
+    "now_ms": 1000000000000,
+    "expect": null
+  },
+  {
+    "name": "epoch-ms appends from and to around now",
+    "window": {
+      "kind": "epoch-ms",
+      "from": "from_ts",
+      "to": "to_ts",
+      "knob": "window",
+      "default": "-1h",
+      "max": "-7d"
+    },
+    "given": null,
+    "now_ms": 1000000000000,
+    "expect": {
+      "substitute": {},
+      "append": {
+        "from_ts": "999996400000",
+        "to_ts": "1000000000000"
+      }
+    }
+  },
+  {
+    "name": "epoch-ms takes a given span",
+    "window": {
+      "kind": "epoch-ms",
+      "from": "from_ts",
+      "to": "to_ts",
+      "knob": "window",
+      "default": "-1h",
+      "max": "-7d"
+    },
+    "given": "-15m",
+    "now_ms": 1000000000000,
+    "expect": {
+      "substitute": {},
+      "append": {
+        "from_ts": "999999100000",
+        "to_ts": "1000000000000"
+      }
+    }
+  },
+  {
+    "name": "epoch-ms cannot snap",
+    "window": {
+      "kind": "epoch-ms",
+      "from": "from_ts",
+      "to": "to_ts",
+      "knob": "window",
+      "default": "-1h",
+      "max": "-7d"
+    },
+    "given": "-1d@d",
+    "now_ms": 1000000000000,
+    "expect": null
+  }
+]
