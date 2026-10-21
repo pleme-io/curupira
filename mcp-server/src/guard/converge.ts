@@ -1,5 +1,6 @@
 import { cdpCall, getJson } from './cdp.js';
 import { closeTarget, sampleChrome } from './memory.js';
+import type { ProfileVerdict } from './profile.js';
 import {
   compileRoutes,
   planTabs,
@@ -29,13 +30,14 @@ export interface ConvergeInput {
   open: OpenPage[];
   enforce: boolean;
   now?: number;
+  profile?: ProfileVerdict;
 }
 
 export async function converge(input: ConvergeInput): Promise<ConvergeReport> {
   const now = input.now ?? Date.now();
   const ledger = readLedger();
   const routes = compileRoutes(input.sites);
-  const plan = planTabs({ desired: input.desired, open: input.open, ledger, routes, budget: input.budget, now, closeDuplicates: input.enforce });
+  const plan = planTabs({ desired: input.desired, open: input.open, ledger, routes, budget: input.budget, now, closeDuplicates: input.enforce, profile: input.profile });
   const report: ConvergeReport = { plan, opened: [], deduped: [], errors: [] };
   if (!input.enforce) {
     writeLedger(ledger);

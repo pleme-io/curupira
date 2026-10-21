@@ -3,8 +3,22 @@
  * Level 0: Foundation (test utilities)
  */
 
-import { vi } from 'vitest'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
+import { afterEach, beforeEach, vi } from 'vitest'
 import type { SessionId, TargetId } from '@curupira/shared/types'
+
+let isolatedProfile: string | null = null
+beforeEach(() => {
+  isolatedProfile = fs.mkdtempSync(path.join(os.tmpdir(), 'curupira-test-profile-'))
+  if (!process.env.CURUPIRA_WORKSPACE_CHROME_PROFILE) process.env.CURUPIRA_WORKSPACE_CHROME_PROFILE = isolatedProfile
+})
+afterEach(() => {
+  if (isolatedProfile) fs.rmSync(isolatedProfile, { recursive: true, force: true })
+  if (process.env.CURUPIRA_WORKSPACE_CHROME_PROFILE === isolatedProfile) delete process.env.CURUPIRA_WORKSPACE_CHROME_PROFILE
+  isolatedProfile = null
+})
 
 // Mock Chrome client
 export const mockChromeClient = {

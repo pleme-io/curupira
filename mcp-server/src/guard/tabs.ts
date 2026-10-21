@@ -2,6 +2,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
+import type { ProfileVerdict } from './profile.js';
+
 export interface Budget {
   enabled: boolean;
   max_tabs: number;
@@ -249,6 +251,7 @@ export interface TabPlan {
   close: Closing[];
   pages: number;
   maxTabs: number;
+  profile?: ProfileVerdict;
 }
 
 export interface PlanInput {
@@ -259,11 +262,15 @@ export interface PlanInput {
   budget: Budget;
   now: number;
   closeDuplicates: boolean;
+  profile?: ProfileVerdict;
 }
 
 export function planTabs(input: PlanInput): TabPlan {
   const { desired, ledger, routes, budget, now } = input;
   const pages = input.open.filter(isCountable);
+  if (input.profile?.outcome === 'refused') {
+    return { present: {}, open: [], signedOut: [], signedOutHosts: [], overBudget: [], flapping: [], close: [], pages: pages.length, maxTabs: budget.max_tabs, profile: input.profile };
+  }
   const live = new Set(pages.map((p) => p.id));
   for (const id of Object.keys(ledger.targets)) if (!live.has(id)) delete ledger.targets[id];
 

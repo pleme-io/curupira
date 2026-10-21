@@ -6,6 +6,7 @@ import * as path from 'node:path';
 import { findChromeBinary, waitForCDP } from '../mcp/tools/providers/chrome-launch-tools.factory.js';
 import { cdpCall } from '../guard/cdp.js';
 import { converge, type ConvergeReport } from '../guard/converge.js';
+import { PINNED_PROFILE, profileVerdict, refusal } from '../guard/profile.js';
 import { budgetOf, hostOf, isSignedOut, type Budget, type GuardSite } from '../guard/tabs.js';
 
 export interface WarmTab {
@@ -226,7 +227,9 @@ export async function ensureChrome(port: number, profile: string, chromeBin?: st
   if (await fetch(`${base}/json/version`).then((r) => r.ok).catch(() => false)) return { launched: false };
   const bin = chromeBin || findChromeBinary();
   if (!bin) return { launched: false, error: 'no Chrome binary to launch' };
-  spawn(bin, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check'], {
+  const refused = refusal(profileVerdict(profile));
+  if (refused) return { launched: false, error: refused };
+  spawn(bin, [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, `--profile-directory=${PINNED_PROFILE}`, '--no-first-run', '--no-default-browser-check'], {
     detached: true,
     stdio: 'ignore',
   }).unref();

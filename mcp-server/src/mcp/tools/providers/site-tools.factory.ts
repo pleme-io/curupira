@@ -38,6 +38,7 @@ import type { IChromeService } from '../../../core/interfaces/chrome-service.int
 import type { IValidator } from '../../../core/interfaces/validator.interface.js';
 import { getJson, withDeadline } from '../../../guard/cdp.js';
 import { readMemoryBook, sampleMemory, enforceMemory } from '../../../guard/memory.js';
+import { profileVerdict, refusal } from '../../../guard/profile.js';
 import { budgetOf, closeCandidates, compileRoutes, isCountable, planTabs, readLedger, recordOpen, writeLedger, type Budget, type OpenPage } from '../../../guard/tabs.js';
 import { applyBounded, boundWindow, knobOf, type TimeWindow } from '../../../guard/window.js';
 
@@ -839,6 +840,8 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     if (isNative(site.value.site)) {
       return this.axDrive(site.value.site, goto, 'goto', { launch: args.launch === true }, [], {});
     }
+    const barred = await this.profileRefusal();
+    if (barred) return barred;
     const template = goto.url_template;
     if (!template) {
       return { success: false, error: `page '${page.value.name}' of site '${site.value.site.id}' has no route to navigate to` };
@@ -1060,6 +1063,13 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     });
   }
 
+  private async profileRefusal(): Promise<{ success: false; error: string; data: unknown } | null> {
+    const { defaultProfile } = await import('../../../warm/warm.js');
+    const verdict = profileVerdict(defaultProfile());
+    const error = refusal(verdict);
+    return error ? { success: false, error, data: { outcome: 'refused', profile: verdict } } : null;
+  }
+
   private async listPages(client: { send: (m: string, p?: Record<string, unknown>) => Promise<unknown> } | null): Promise<OpenPage[] | null> {
     if (client) {
       try {
@@ -1084,6 +1094,8 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     if (!ws) {
       return { success: false, error: `unknown workspace '${String(args.workspace)}'; legal: ${legal(workspaces.map((w) => w.name))}` };
     }
+    const barred = await this.profileRefusal();
+    if (barred) return barred;
     const only = Array.isArray(args.only) ? new Set(args.only.map(String)) : null;
     const tabs = ws.tabs.filter((t) => !only || only.has(t.key));
     const client = this.chromeService.getCurrentClient();
@@ -1710,6 +1722,10 @@ export class SiteToolProvider extends ChromeIndependentToolProvider<SiteToolProv
     label: string,
     extra: Record<string, unknown>,
   ): Promise<{ success: boolean; error?: string; data?: unknown }> {
+    if (!isDesktop(site) && !isNative(site)) {
+      const barred = await this.profileRefusal();
+      if (barred) return barred;
+    }
     const mutating = spec.effect === 'mutate';
     // ── The borrowed-ground gate ──────────────────────────────────────
     // Checked here as well as in the schema. The schema stops a

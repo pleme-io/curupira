@@ -22,6 +22,7 @@ import {
 } from '../warm/warm.js';
 import { converge } from '../guard/converge.js';
 import { enforceMemory, type MemoryEvent, type MemorySample } from '../guard/memory.js';
+import { profileVerdict, refusal, type ProfileVerdict } from '../guard/profile.js';
 import { budgetOf, type Budget } from '../guard/tabs.js';
 
 export const BUILTIN_ALLOW = ['devtools://', 'chrome-extension://', 'chrome://', 'about:blank'];
@@ -42,7 +43,7 @@ export type StrayBook = Record<string, Stray>;
 export interface ReconcileReport {
   at: number;
   posture: string;
-  state: 'idle' | 'converged' | 'converging' | 'limited' | 'blind' | 'held';
+  state: 'idle' | 'converged' | 'converging' | 'limited' | 'blind' | 'held' | 'refused';
   reason?: string;
   tick_seconds: number;
   desired: number;
@@ -61,6 +62,7 @@ export interface ReconcileReport {
   memoryOver?: { chrome_mb: number; budget_mb: number };
   memory?: { state: MemorySample['state']; pages: number; chrome_mb?: number; largest?: { url: string; heap_mb?: number }; frozen: number; events: MemoryEvent[] };
   warm?: WarmReport;
+  profile?: ProfileVerdict;
   errors: string[];
 }
 
@@ -205,6 +207,8 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
   }
 
   const profile = opts.profile ?? defaultProfile();
+  const pv = profileVerdict(profile);
+  if (pv.outcome === 'refused' || pv.outcome === 'blind') report.profile = pv;
   const base = `http://127.0.0.1:${opts.port}`;
   const desired = postureTabs(bundle, posture);
   report.desired = desired.length;
@@ -224,7 +228,7 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
   if (budget.enabled) await guardMemory(report, opts.port, budget, now);
 
   if (rc.tabs !== 'off') {
-    const tabs = await converge({ port: opts.port, desired, sites: bundle.sites ?? [], budget, open: targets, enforce: rc.tabs === 'enforce', now: now.getTime() });
+    const tabs = await converge({ port: opts.port, desired, sites: bundle.sites ?? [], budget, open: targets, enforce: rc.tabs === 'enforce', now: now.getTime(), profile: pv });
     const plan = tabs.plan;
     report.missing = [...plan.open.map((t) => t.key), ...plan.signedOut, ...plan.overBudget, ...plan.flapping];
     report.opened = tabs.opened;
@@ -243,7 +247,7 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
   if (rc.strays !== 'ignore') {
     const seen = findStrays(targets, desired, rc.allow);
     const { book, fresh } = mergeStrays(readStrays(), seen, now.getTime());
-    if (rc.strays === 'close') {
+    if (rc.strays === 'close' && pv.outcome !== 'refused') {
       for (const t of seen) {
         const key = strayKey(t.url);
         if (book[key]?.verdict === 'adopted' || book[key]?.verdict === 'dismissed') continue;
@@ -265,10 +269,12 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
     report.strays = Object.values(book);
   }
 
-  try {
-    report.warm = await warm({ posture: name, port: opts.port, profile, chromeBin: opts.chromeBin, stackBin: opts.stackBin, now, open: false });
-  } catch (err) {
-    report.errors.push(`warm: ${err instanceof Error ? err.message : String(err)}`);
+  if (pv.outcome !== 'refused') {
+    try {
+      report.warm = await warm({ posture: name, port: opts.port, profile, chromeBin: opts.chromeBin, stackBin: opts.stackBin, now, open: false });
+    } catch (err) {
+      report.errors.push(`warm: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const open = report.strays.filter((s) => s.verdict === 'questioned').length;
@@ -280,6 +286,10 @@ export async function reconcileOnce(opts: ReconcileOptions): Promise<ReconcileRe
       report.overBudget?.length ? `${report.overBudget.length} tab(s) over the ${budget.max_tabs}-tab budget${report.memoryOver ? ' or the Chrome memory budget' : ''}` : '',
       report.flapping?.length ? `${report.flapping.length} tab(s) reopened too often in the last hour: ${report.flapping.join(', ')}` : '',
     ].filter(Boolean).join('; ');
+  }
+  if (pv.outcome === 'refused') {
+    report.state = 'refused';
+    report.reason = refusal(pv) ?? undefined;
   }
   return settle(report);
 }
